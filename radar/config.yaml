@@ -1,0 +1,88 @@
+# issue-radar configuration.
+# This tool only reads issues and sends alerts. It never comments, assigns,
+# labels, or opens PRs on any watched repo.
+
+repos:
+  - name: OWASP/Nettacker
+    org: OWASP
+    reviewers: [securestep9, arkid15r]
+    requires_assignment: true
+
+  - name: GreedyBear-Project/GreedyBear
+    org: Honeynet
+    reviewers: [regulartim]
+    requires_assignment: true
+
+  - name: intelowlproject/IntelOwl
+    org: Honeynet
+    # mlodic is stepping down after GSoC 2026; successor unknown as of writing.
+    reviewers: [mlodic]
+    requires_assignment: true
+
+  - name: openwisp/openwisp-firmware-upgrader
+    org: OpenWISP
+    reviewers: [nemesifier, pandafy]
+    requires_assignment: false
+    reserve: true
+
+# Keywords used by triage.fit_tag. Matching is case-insensitive against
+# issue labels, title, and body.
+skills:
+  positive_keywords:
+    - python
+    - django
+    - bug
+    - security
+    - scanner
+    - module
+    - yaml
+    - test
+    - api
+  negative_keywords:
+    - react
+    - frontend
+    - css
+    - ui
+    - javascript-only
+    - translation
+
+# Substrings (case-insensitive) that flag a comment as a claim attempt.
+claim_phrases:
+  - "assign me"
+  - "can i work"
+  - "i'd like to work"
+  - "i would like to work"
+  - "i'll take"
+  - "i will take"
+  - "i can work on this"
+  - "please assign"
+  - "may i work"
+
+# Labels that mark an issue as reserved for an active program (e.g. GSoC) and
+# therefore DISCUSS-ONLY rather than something to alert on as free to claim.
+reserved_labels:
+  - gsoc-idea
+  - gsoc
+  - do-not-work-on
+  - reserved
+
+# An issue with no activity for this many days is considered stale.
+staleness_days_threshold: 30
+
+notifier:
+  # One of: telegram, discord
+  type: telegram
+  # When true, alerts are printed to the terminal instead of sent.
+  # Overridden by the --dry-run CLI flag regardless of this value.
+  dry_run: false
+
+# Optional LLM-generated 2-sentence summary of "what is this issue asking".
+# Never used for status or fit_tag decisions. Skipped entirely if enabled
+# but no API key is present in the environment.
+llm:
+  enabled: false
+  provider: null
+  model: null
+
+state_file: state.json
+sweep_report_file: sweep_report.md

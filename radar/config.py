@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+
+@dataclass
+class RepoConfig:
+    name: str
+    org: str
+    reviewers: list[str] = field(default_factory=list)
+    requires_assignment: bool = True
+    reserve: bool = False
+
+
+@dataclass
+class NotifierConfig:
+    type: str = "telegram"
+    dry_run: bool = False
+
+
+@dataclass
+class LLMConfig:
+    enabled: bool = False
+    provider: str | None = None
+    model: str | None = None
+
+
+@dataclass
+class Config:
+    repos: list[RepoConfig]
+    positive_keywords: list[str]
+    negative_keywords: list[str]
+    claim_phrases: list[str]
+    reserved_labels: list[str]
+    staleness_days_threshold: int
+    notifier: NotifierConfig
+    llm: LLMConfig
+    state_file: str
+    sweep_report_file: str
+
+
+def load_config(path: str | Path) -> Config:
+    with open(path, "r") as f:
+        raw = yaml.safe_load(f)
+
+    repos = [RepoConfig(**repo) for repo in raw["repos"]]
+    skills = raw.get("skills", {})
+    notifier_raw = raw.get("notifier", {})
+    llm_raw = raw.get("llm", {})
+
+    return Config(
+        repos=repos,
+        positive_keywords=[k.lower() for k in skills.get("positive_keywords", [])],
+        negative_keywords=[k.lower() for k in skills.get("negative_keywords", [])],
+        claim_phrases=[p.lower() for p in raw.get("claim_phrases", [])],
+        reserved_labels=[l.lower() for l in raw.get("reserved_labels", [])],
+        staleness_days_threshold=raw.get("staleness_days_threshold", 30),
+        notifier=NotifierConfig(**notifier_raw),
+        llm=LLMConfig(**llm_raw),
+        state_file=raw.get("state_file", "state.json"),
+        sweep_report_file=raw.get("sweep_report_file", "sweep_report.md"),
+    )
