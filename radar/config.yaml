@@ -2,6 +2,11 @@
 # This tool only reads issues and sends alerts. It never comments, assigns,
 # labels, or opens PRs on any watched repo.
 
+# Each repo below can optionally override the global positive_keywords,
+# negative_keywords, claim_phrases, and reserved_labels (set further down)
+# by adding the same field directly on the repo entry - see "Adding a new
+# repo" in README.md for an example. Omitted fields inherit the global
+# default; an explicit list (even []) replaces it entirely.
 repos:
   - name: OWASP/Nettacker
     org: OWASP

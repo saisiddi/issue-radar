@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from radar.config import Config, load_config
+from radar.config import Config, effective_keywords, load_config
 from radar.github_client import (
     BackoffBudgetExceeded,
     GitHubAPIError,
@@ -70,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
 def run_poll(
     config: Config, state_path: str, dry_run: bool, token: str | None, now: datetime | None = None
 ) -> int:
+    # Captured once, here, before any API call - this is the run's START
+    # time. A run with many repos/issues can take minutes; if `now` were
+    # computed later (e.g. per-repo or at the end), an issue opened mid-run
+    # could fall in the gap and never get alerted on.
     now = now or datetime.now(timezone.utc)
     now_str = now.strftime(GITHUB_TIMESTAMP_FORMAT)
 
@@ -90,6 +94,7 @@ def run_poll(
     summary_rows: list[tuple[str, int, str, str, str, str]] = []
 
     for repo_cfg in config.repos:
+        positive_keywords, negative_keywords, claim_phrases, reserved_labels = effective_keywords(repo_cfg, config)
         repo_state = state.for_repo(repo_cfg.name)
         is_first_run = repo_state.last_seen is None
         since = repo_state.last_seen or (
@@ -143,10 +148,10 @@ def run_poll(
                 comments=comments,
                 timeline=timeline,
                 repo_name=repo_cfg.name,
-                positive_keywords=config.positive_keywords,
-                negative_keywords=config.negative_keywords,
-                claim_phrases=config.claim_phrases,
-                reserved_labels=config.reserved_labels,
+                positive_keywords=positive_keywords,
+                negative_keywords=negative_keywords,
+                claim_phrases=claim_phrases,
+                reserved_labels=reserved_labels,
             )
 
             if result["status"] not in ALERTABLE_STATUSES:

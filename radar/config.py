@@ -13,6 +13,12 @@ class RepoConfig:
     reviewers: list[str] = field(default_factory=list)
     requires_assignment: bool = True
     reserve: bool = False
+    # None means "use the global default" (see effective_keywords); an
+    # explicit list, even empty, overrides it entirely for this repo.
+    positive_keywords: list[str] | None = None
+    negative_keywords: list[str] | None = None
+    claim_phrases: list[str] | None = None
+    reserved_labels: list[str] | None = None
 
 
 @dataclass
@@ -58,11 +64,21 @@ class Config:
     sweep_report_file: str
 
 
+REPO_OVERRIDE_KEYWORD_LIST_FIELDS = ("positive_keywords", "negative_keywords", "claim_phrases", "reserved_labels")
+
+
 def load_config(path: str | Path) -> Config:
     with open(path, "r") as f:
         raw = yaml.safe_load(f)
 
-    repos = [RepoConfig(**repo) for repo in raw["repos"]]
+    repos = []
+    for repo_raw in raw["repos"]:
+        repo_raw = dict(repo_raw)
+        for key in REPO_OVERRIDE_KEYWORD_LIST_FIELDS:
+            if repo_raw.get(key) is not None:
+                repo_raw[key] = [v.lower() for v in repo_raw[key]]
+        repos.append(RepoConfig(**repo_raw))
+
     skills = raw.get("skills", {})
     notifier_raw = raw.get("notifier", {})
     llm_raw = raw.get("llm", {})
@@ -82,4 +98,18 @@ def load_config(path: str | Path) -> Config:
         poll=PollConfig(**poll_raw),
         state_file=raw.get("state_file", "state.json"),
         sweep_report_file=raw.get("sweep_report_file", "sweep_report.md"),
+    )
+
+
+def effective_keywords(repo: RepoConfig, config: Config) -> tuple[list[str], list[str], list[str], list[str]]:
+    """(positive_keywords, negative_keywords, claim_phrases, reserved_labels) for a repo.
+
+    Falls back to the global config defaults for any field the repo doesn't
+    override (None); an explicit list, even empty, overrides it entirely.
+    """
+    return (
+        repo.positive_keywords if repo.positive_keywords is not None else config.positive_keywords,
+        repo.negative_keywords if repo.negative_keywords is not None else config.negative_keywords,
+        repo.claim_phrases if repo.claim_phrases is not None else config.claim_phrases,
+        repo.reserved_labels if repo.reserved_labels is not None else config.reserved_labels,
     )

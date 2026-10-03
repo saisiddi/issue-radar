@@ -142,6 +142,47 @@ class TestRunPollDryRun:
         assert list_issues_call[2] == "2026-01-15T00:00:00Z"
 
 
+class TestPerRepoOverridesInPoll:
+    def test_repo_override_keywords_are_used_instead_of_global(self, monkeypatch, tmp_path, capsys):
+        # Global keywords are python/security/react; this repo overrides
+        # positive_keywords to "rust" only. An issue that matches "rust"
+        # but none of the global keywords should still come out GOOD.
+        repo = RepoConfig(
+            name="owner/repo",
+            org="Org",
+            reviewers=[],
+            positive_keywords=["rust"],
+            negative_keywords=[],
+        )
+        config = make_config([repo])
+        issue = make_issue(1)
+        issue["title"] = "Fix a rust memory bug"
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [issue]})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "GOOD" in out
+        assert "rust" in out
+
+    def test_repo_without_override_falls_back_to_global_keywords(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        issue["title"] = "Fix a python security bug"
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [issue]})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "GOOD" in out
+        assert "python" in out
+
+
 class TestFirstRunBootstrap:
     def test_first_run_since_is_now_minus_window_not_unbounded(self, monkeypatch, tmp_path):
         repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
@@ -199,6 +240,64 @@ class TestFirstRunBootstrap:
 
         list_issues_call = next(c for c in fake_client.calls if c[0] == "list_issues")
         assert list_issues_call[2] == "2026-01-20T00:00:00Z"
+
+
+class _FakeDatetimeNamespace:
+    """Stands in for the `datetime` name inside radar.main: forwards
+    everything except `.now()`, which returns one scripted value and
+    counts how many times it was called."""
+
+    def __init__(self, now_value):
+        self.now_value = now_value
+        self.now_call_count = 0
+
+    def now(self, tz=None):
+        self.now_call_count += 1
+        return self.now_value
+
+
+class TestRunStartTimeNotEndTime:
+    def test_now_is_computed_exactly_once_per_run(self, monkeypatch, tmp_path):
+        import radar.main as main_module
+
+        fake_datetime = _FakeDatetimeNamespace(NOW)
+        monkeypatch.setattr(main_module, "datetime", fake_datetime)
+
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        # Two issues needing detail calls, so there's real work for a
+        # regression to sneak a second now() call into.
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [make_issue(1), make_issue(2)]})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok")  # now=None -> internal clock read
+
+        assert fake_datetime.now_call_count == 1
+
+    def test_run_start_time_is_a_floor_not_a_ceiling(self, monkeypatch, tmp_path):
+        # `now` (the run's start time) only seeds latest_seen as a lower
+        # bound; it must never clamp it down below an issue's own
+        # updated_at. Otherwise a fast-moving issue fetched mid-run could
+        # get its advancement capped at start time instead of its real
+        # updated_at, and the next poll would redundantly re-fetch it.
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        run_start = NOW
+        issue_updated_after_start = (run_start + timedelta(minutes=1)).strftime(GITHUB_TIMESTAMP_FORMAT)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [make_issue(1, updated_at=issue_updated_after_start)]}
+        )
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        state_path.write_text(
+            json.dumps({"owner/repo": {"last_seen": "2026-01-20T00:00:00Z", "alerted_issue_numbers": []}})
+        )
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=run_start)
+
+        repo_state = load_state(state_path).for_repo("owner/repo")
+        assert repo_state.last_seen == issue_updated_after_start
 
 
 class TestRunPollErrorHandling:
