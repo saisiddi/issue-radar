@@ -1,22 +1,102 @@
 # issue-radar
 
-GitHub issue alert and triage tool. Alerts only - never comments, assigns, labels, or opens PRs on any watched repo.
+GitHub issue alert and triage tool for a few watched repos. **Alerts and reports only** - it never comments, assigns, labels, or opens PRs on any watched repo, regardless of mode, token source, or config.
 
-Full setup docs land with the GitHub Actions workflow (step 6). These sections are here early because they're needed now.
+- `poll` - alerts on new/changed issues since the last run. Meant to run on a schedule (see GitHub Actions below).
+- `sweep` - a one-time Markdown report over every open issue in a repo, for a manual pass over the backlog.
 
-## GitHub authentication
+## Setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt   # or requirements.txt if you don't need to run tests
+```
+
+Run the tests:
+
+```bash
+pytest -q
+```
+
+### GitHub authentication
 
 The tool resolves a GitHub token in this order:
 
 1. `gh auth token` - if the [GitHub CLI](https://cli.github.com/) is installed and you're logged in (`gh auth login`), this is used automatically. Nothing to configure.
-2. `GITHUB_TOKEN` environment variable (or in a local `.env` file, gitignored - see `.env.example`).
+2. `GITHUB_TOKEN` environment variable (or in a local `.env` file, gitignored - copy `.env.example` to `.env` and fill it in).
 3. `GH_PAT` environment variable, same way.
 
-If none are available, requests run unauthenticated (60/hour - not enough for most of these repos' issue counts).
+If none are available, requests run unauthenticated (60/hour - not enough for most of these repos' issue counts; `sweep` especially will hit this fast).
 
 The token is never printed or logged; only its source (e.g. "gh CLI") is.
 
-This tool only ever makes read-only GitHub API calls (listing issues, comments, and timelines) - it never comments, assigns, labels, or opens PRs, regardless of which token source is used.
+### Notifier credentials (for poll, not needed for `--dry-run`)
+
+Set in `.env` (local) or as GitHub Actions secrets (see below):
+
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` (default notifier), or
+- `DISCORD_WEBHOOK_URL`, with `notifier.type: discord` set in `radar/config.yaml`.
+
+## Running locally
+
+```bash
+python -m radar.main poll --dry-run
+```
+
+Prints each alert-worthy issue to the terminal instead of sending it, plus a summary table and the number of API requests used. Safe to run repeatedly - it still reads real state from `state.json`/writes it back, so repeated dry-runs behave like repeated real polls for dedupe purposes.
+
+```bash
+python -m radar.main sweep --dry-run --repo OWASP/Nettacker
+```
+
+Sweeps one repo (omit `--repo`, or repeat the flag, to cover more) and writes `sweep_report_<owner>_<repo>.md`. `--dry-run` also prints the top 15 rows to the terminal.
+
+Both commands take `--config path/to/config.yaml` if you don't want the default at `radar/config.yaml`.
+
+## GitHub Actions (scheduled poll)
+
+The workflow at [.github/workflows/radar.yml](.github/workflows/radar.yml) runs `poll` every 30 minutes and on manual dispatch, then commits the updated `state.json` back to the repo so dedupe state persists between runs.
+
+Two things to know about GitHub's scheduler:
+- **Cron can be delayed.** GitHub doesn't guarantee the `*/30 * * * *` schedule fires exactly on time, especially under load - treat "every 30 minutes" as "roughly every 30 minutes."
+- **Scheduled workflows on public repos are auto-disabled after 60 days with no repository activity.** The workflow's own `state.json` commits count as activity, so as long as it's actually finding issues to alert on (or at least advancing `last_seen`), it keeps itself alive. If a repo's been quiet long enough that even that stops, re-enable it from the repo's Actions tab.
+
+This repo is **not** pushed anywhere and has no secrets configured yet - none of that is done automatically. When you're ready, here's exactly what to run (adjust the username/repo name and secret values):
+
+```bash
+gh repo create your-username/issue-radar --private --source=. --remote=origin
+```
+
+```bash
+git push -u origin master
+```
+
+```bash
+gh secret set TELEGRAM_BOT_TOKEN
+```
+
+```bash
+gh secret set TELEGRAM_CHAT_ID
+```
+
+`gh secret set NAME` with no `--body` prompts you to paste the value interactively, so it never ends up in your shell history. Only set the two above if you're using the default Telegram notifier; for Discord instead, set `DISCORD_WEBHOOK_URL` and change `notifier.type` to `discord` in `radar/config.yaml` first.
+
+```bash
+gh secret set DISCORD_WEBHOOK_URL
+```
+
+`GH_PAT` is optional - only add it if the default `GITHUB_TOKEN` Actions provides (scoped to this one repo) isn't sufficient, which it normally is for reading public repos elsewhere:
+
+```bash
+gh secret set GH_PAT
+```
+
+After secrets are set, trigger a manual run to confirm everything's wired up before waiting for the cron schedule:
+
+```bash
+gh workflow run radar.yml
+```
 
 ## Adding a new repo
 
@@ -57,9 +137,9 @@ Every triaged issue gets exactly one status. Poll and sweep both alert/keep ever
 | Status | Meaning |
 |---|---|
 | `OPEN-FREE` | No assignee, no linked PR, no other claim signal. |
-| `AUTHOR-CLAIMED` | The reporter appears to intend to do the work themselves - either a claim phrase in the issue body (e.g. "I'd like to work on this", "happy to submit a PR") or a title starting with "Proposal:". Not a hard assignment, just a heads-up not to duplicate effort. |
+| `AUTHOR-CLAIMED` | The reporter appears to intend to do the work themselves - either a claim phrase in the issue body (e.g. "I'd like to work on this", "happy to take", "happy to submit a PR") or a title starting with "Proposal:". Not a hard assignment, just a heads-up not to duplicate effort. |
 | `CONTESTED` | 2+ comments look like claim attempts and nobody's assigned. |
-| `DISCUSS-ONLY` | A reserved label (`reserved_labels` in config) matched, or the title mentions "GSoC" - treated the same way even without a label, since these repos use that word loosely in titles. |
+| `DISCUSS-ONLY` | A reserved label (`reserved_labels` in config) matched, or the title mentions "GSoC" - treated the same way even without a label, since these repos use that word loosely in titles. Takes priority over AUTHOR-CLAIMED when a title triggers both (e.g. "Proposal: ... - GSoC 2026"). |
 | `UNSURE` | A linked PR exists but the evidence is ambiguous (see below) - never silently called "free" on weak evidence. |
 | `HAS-PR` | An open or merged same-repo PR clearly references fixing this issue (closing keyword in title/body, or the issue's own author opened the PR). |
 | `CLAIMED` | GitHub assignee is set. |
@@ -68,8 +148,17 @@ Every triaged issue gets exactly one status. Poll and sweep both alert/keep ever
 
 ## Sweep report
 
-`sweep_report.md` groups by repo. Within a repo, the main table sorts GOOD-fit issues first, then issues a maintainer has already commented on, then by most recent activity - each repo also gets a separate "Old / unanswered" section at the bottom for issues with no maintainer-reviewer comment and no activity for `sweep.very_old_days_threshold` days (180 by default), so they don't clutter the main table.
+`sweep --repo owner/repo` writes `sweep_report_owner_repo.md` - one file per repo, so sweeping several repos (in one call with multiple `--repo` flags, or across separate calls) never overwrites an earlier repo's report.
+
+Within a repo's report, the main table sorts GOOD-fit issues first, then issues a maintainer has already commented on, then by most recent activity. A separate "Old / unanswered" section at the bottom holds issues with no maintainer-reviewer comment and no activity for `sweep.very_old_days_threshold` days (180 by default), so they don't clutter the main table.
 
 Columns include "Maintainer replied?" (any comment from one of that repo's configured `reviewers`) and "Likely already fixed?" (a merged same-repo PR references the issue, even if ambiguous enough to land as UNSURE rather than HAS-PR).
 
-**On issue counts**: the tool's "open issues scanned" count excludes pull requests entirely. A repo's `open_issues_count` on GitHub bundles open issues *and* open PRs together (a well-known REST API quirk), so it will read higher than what shows up here - that's expected.
+**On issue counts**: the tool's "open issues scanned" count excludes pull requests entirely. A repo's `open_issues_count` on GitHub bundles open issues *and* open PRs together (a well-known REST API quirk - confirmed live against OWASP/Nettacker: GitHub shows 255 there, which is 111 actual open issues + 144 open PRs), so it will read higher than what shows up here. That's expected, not a bug.
+
+## Project rules
+
+- Never comments, assigns, labels, or opens PRs - on any repo, in any mode, regardless of token source.
+- `gh` is used strictly to read the auth token (`gh auth token`) - nothing else, anywhere in this codebase.
+- Secrets are never printed or logged; only safe-to-log metadata (token source, repo names, issue numbers) appears in output.
+- `state.json` and sweep reports are the only files this tool writes locally; the only thing it writes to GitHub is the Actions workflow's own `state.json` commit back to this repo.
