@@ -16,17 +16,15 @@ from radar.github_client import (
 )
 from radar.notify import NotifierConfigError, NotifierError, format_alert, get_notifier
 from radar.state import load_state, save_state
-from radar.triage import triage_issue
+from radar.triage import maintainer_replied, triage_issue
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 DEFAULT_DOTENV_PATH = Path(__file__).parent.parent / ".env"
 # Issues in these statuses are worth a human's attention; CLAIMED and HAS-PR
 # are deliberately excluded everywhere this set is used (poll alerts, the
 # sweep report) - someone's already on it.
-ALERTABLE_STATUSES = {"OPEN-FREE", "CONTESTED", "UNSURE", "DISCUSS-ONLY"}
+ALERTABLE_STATUSES = {"OPEN-FREE", "CONTESTED", "UNSURE", "DISCUSS-ONLY", "AUTHOR-CLAIMED"}
 GITHUB_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
-SWEEP_STATUS_RANK = {"OPEN-FREE": 0, "CONTESTED": 1, "UNSURE": 2, "DISCUSS-ONLY": 3}
-SWEEP_FIT_RANK = {"GOOD": 0, "DOCS": 1, "MAYBE": 2, "SKIP": 3}
 
 
 def load_dotenv(path: Path = DEFAULT_DOTENV_PATH) -> None:
@@ -77,7 +75,9 @@ def _summary_reason(result: dict) -> str:
     if result["status"] == "CONTESTED":
         return f"{result['claim_comments']} claim comments, unassigned"
     if result["status"] == "DISCUSS-ONLY":
-        return f"reserved label: {', '.join(result.get('reserved_labels') or [])}"
+        return f"reserved: {', '.join(result.get('reserved_hints') or [])}"
+    if result["status"] == "AUTHOR-CLAIMED":
+        return f"author self-claim: {result.get('author_claim_reason') or 'unspecified'}"
     abandoned = [n for n in (result.get("linked_pr_notes") or []) if "closed unmerged" in n]
     if abandoned:
         return "; ".join(abandoned)
@@ -227,35 +227,85 @@ def run_poll(
     return 1 if had_error else 0
 
 
-def _sweep_sort_key(row: dict) -> tuple:
-    staleness = row["staleness_days"] if row["staleness_days"] is not None else -1
+def _is_old_unanswered(row: dict, very_old_days_threshold: int) -> bool:
+    staleness = row["staleness_days"]
+    return not row.get("maintainer_replied") and staleness is not None and staleness >= very_old_days_threshold
+
+
+def _main_sort_key(row: dict) -> tuple:
+    # GOOD fit first, then issues a maintainer has already weighed in on,
+    # then most-recent activity first within each tier.
+    staleness = row["staleness_days"] if row["staleness_days"] is not None else 10**9
     return (
-        SWEEP_STATUS_RANK.get(row["status"], 99),
-        SWEEP_FIT_RANK.get(row["fit_tag"], 99),
-        -staleness,  # most-stale (most neglected) first within a status/fit tier
+        0 if row["fit_tag"] == "GOOD" else 1,
+        0 if row.get("maintainer_replied") else 1,
+        staleness,
     )
 
 
-def _write_sweep_report(sections: dict[str, list[dict]], path: str) -> None:
-    lines = ["# issue-radar sweep report", ""]
-    for repo_name, rows in sections.items():
-        lines.append(f"## {repo_name} ({len(rows)} issues)")
+def _old_unanswered_sort_key(row: dict) -> tuple:
+    staleness = row["staleness_days"] if row["staleness_days"] is not None else -1
+    return -staleness  # most neglected first
+
+
+def _sweep_table_header() -> str:
+    return (
+        "| # | Title | Status | Fit | Staleness (days) | Maintainer replied? | Likely already fixed? |\n"
+        "|---|---|---|---|---|---|---|"
+    )
+
+
+def _sweep_table_row(row: dict) -> str:
+    fixed = "Yes" if row.get("likely_already_fixed") else "No"
+    replied = "Yes" if row.get("maintainer_replied") else "No"
+    title = (row.get("title") or "").replace("|", "\\|")
+    staleness = row["staleness_days"] if row["staleness_days"] is not None else "?"
+    return (
+        f"| [#{row['number']}]({row.get('html_url', '')}) | {title} | {row['status']} "
+        f"| {row['fit_tag']} | {staleness} | {replied} | {fixed} |"
+    )
+
+
+def _write_sweep_report(sections: dict[str, dict[str, list[dict]]], path: str) -> None:
+    lines = [
+        "# issue-radar sweep report",
+        "",
+        "Pull requests are excluded from every count here (the GitHub REST "
+        "`/issues` endpoint mixes PRs into its results; we filter them out via "
+        "the `pull_request` field). A repo's `open_issues_count` on GitHub "
+        "bundles open issues *and* open PRs together, so it reads higher than "
+        "the counts below - that's expected, not a bug.",
+        "",
+    ]
+    for repo_name, repo_sections in sections.items():
+        main_rows = repo_sections["main"]
+        old_rows = repo_sections["old_unanswered"]
+        lines.append(f"## {repo_name} ({len(main_rows) + len(old_rows)} issues)")
         lines.append("")
-        lines.append("| # | Title | Status | Fit | Staleness (days) | Likely already fixed? |")
-        lines.append("|---|---|---|---|---|---|")
-        for row in rows:
-            fixed = "Yes" if row.get("likely_already_fixed") else "No"
-            title = (row.get("title") or "").replace("|", "\\|")
-            staleness = row["staleness_days"] if row["staleness_days"] is not None else "?"
-            lines.append(
-                f"| [#{row['number']}]({row.get('html_url', '')}) | {title} | {row['status']} "
-                f"| {row['fit_tag']} | {staleness} | {fixed} |"
-            )
+        lines.append(_sweep_table_header())
+        for row in main_rows:
+            lines.append(_sweep_table_row(row))
         lines.append("")
+
+        if old_rows:
+            lines.append(f"### Old / unanswered ({len(old_rows)} issues)")
+            lines.append("")
+            lines.append(_sweep_table_header())
+            for row in old_rows:
+                lines.append(_sweep_table_row(row))
+            lines.append("")
+
     Path(path).write_text("\n".join(lines))
 
 
-def run_sweep(config: Config, dry_run: bool, token: str | None, repo_names: list[str] | None = None) -> int:
+def run_sweep(
+    config: Config,
+    dry_run: bool,
+    token: str | None,
+    repo_names: list[str] | None = None,
+    now: datetime | None = None,
+) -> int:
+    now = now or datetime.now(timezone.utc)
     client = GitHubClient(
         token=token,
         max_total_backoff_seconds=config.limits.max_total_backoff_seconds,
@@ -270,7 +320,8 @@ def run_sweep(config: Config, dry_run: bool, token: str | None, repo_names: list
                 print(f"warning: --repo {name} is not in config.yaml, ignoring", file=sys.stderr)
 
     had_error = False
-    sections: dict[str, list[dict]] = {}
+    sections: dict[str, dict[str, list[dict]]] = {}
+    total_issues_scanned = 0
 
     for repo_cfg in repos_to_sweep:
         positive_keywords, negative_keywords, claim_phrases, reserved_labels = effective_keywords(repo_cfg, config)
@@ -290,6 +341,7 @@ def run_sweep(config: Config, dry_run: bool, token: str | None, repo_names: list
         budget_exhausted = False
         for issue in issues:
             number = issue["number"]
+            total_issues_scanned += 1
             try:
                 comments = list(client.list_issue_comments(repo_cfg.name, number))
                 timeline = list(client.list_issue_timeline(repo_cfg.name, number))
@@ -315,31 +367,42 @@ def run_sweep(config: Config, dry_run: bool, token: str | None, repo_names: list
                 negative_keywords=negative_keywords,
                 claim_phrases=claim_phrases,
                 reserved_labels=reserved_labels,
+                now=now,
             )
 
             if result["status"] not in ALERTABLE_STATUSES:
                 continue  # skip PRs (already excluded by list_issues) and CLAIMED/HAS-PR
 
             result["html_url"] = issue.get("html_url")
+            result["maintainer_replied"] = maintainer_replied(comments, repo_cfg.reviewers)
             rows.append(result)
 
-        rows.sort(key=_sweep_sort_key)
-        sections[repo_cfg.name] = rows
+        very_old = config.sweep.very_old_days_threshold
+        main_rows = [r for r in rows if not _is_old_unanswered(r, very_old)]
+        old_rows = [r for r in rows if _is_old_unanswered(r, very_old)]
+        main_rows.sort(key=_main_sort_key)
+        old_rows.sort(key=_old_unanswered_sort_key)
+        sections[repo_cfg.name] = {"main": main_rows, "old_unanswered": old_rows}
 
         if budget_exhausted:
             break
 
     _write_sweep_report(sections, config.sweep_report_file)
     print(f"Sweep report written to {config.sweep_report_file}", file=sys.stderr)
+    print(
+        f"Open issues scanned (pull requests excluded): {total_issues_scanned}",
+        file=sys.stderr,
+    )
     print(f"API requests used this run: {client.request_count}", file=sys.stderr)
 
     if dry_run:
-        for repo_name, rows in sections.items():
-            print(f"\n=== {repo_name} ({len(rows)} issues kept) ===")
-            for row in rows[:15]:
+        for repo_name, repo_sections in sections.items():
+            main_rows, old_rows = repo_sections["main"], repo_sections["old_unanswered"]
+            print(f"\n=== {repo_name} ({len(main_rows)} main + {len(old_rows)} old/unanswered) ===")
+            for row in main_rows[:15]:
                 print(
                     f"#{row['number']:<6} {row['status']:<12} {row['fit_tag']:<6} "
-                    f"staleness={row['staleness_days']}d  {row['title']}"
+                    f"replied={row.get('maintainer_replied')!s:<5} staleness={row['staleness_days']}d  {row['title']}"
                 )
 
     return 1 if had_error else 0

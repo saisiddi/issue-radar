@@ -116,6 +116,16 @@ def analyze_linked_prs(
     )
 
 
+def maintainer_replied(comments: list[dict], reviewers: list[str]) -> bool:
+    """Whether any comment author is one of the repo's configured reviewers."""
+    reviewer_logins = {r.lower() for r in reviewers}
+    for comment in comments:
+        login = (comment.get("user") or {}).get("login")
+        if login and login.lower() in reviewer_logins:
+            return True
+    return False
+
+
 def count_claim_comments(comments: list[dict], claim_phrases: list[str]) -> int:
     count = 0
     for comment in comments:
@@ -132,6 +142,36 @@ def _label_names(labels: list) -> list[str]:
 def matched_reserved_labels(labels: list, reserved_labels: list[str]) -> list[str]:
     names = _label_names(labels)
     return [name for name in names if name in reserved_labels]
+
+
+def reserved_hints(issue: dict, reserved_labels: list[str]) -> list[str]:
+    """Reasons to treat this issue as reserved/DISCUSS-ONLY: matched labels
+    plus a "GSoC" mention in the title, which gets the same treatment as a
+    reserved label even without one actually being applied."""
+    hints = matched_reserved_labels(issue.get("labels", []), reserved_labels)
+    if "gsoc" in (issue.get("title") or "").lower():
+        hints.append("title mentions GSoC")
+    return hints
+
+
+# Title prefixes that, on their own, are a strong hint the reporter intends
+# to do the work themselves (common in these repos' GSoC-adjacent issues).
+AUTHOR_CLAIM_TITLE_PREFIXES = ("proposal:",)
+
+
+def author_self_claim(issue: dict, claim_phrases: list[str]) -> str | None:
+    """None, or a human-readable reason the issue's own body/title suggests
+    its author intends to submit the fix themselves."""
+    body = (issue.get("body") or "").lower()
+    matched_phrase = next((p for p in claim_phrases if p in body), None)
+    if matched_phrase:
+        return f'issue body says: "{matched_phrase}"'
+
+    title = (issue.get("title") or "").strip().lower()
+    if title.startswith(AUTHOR_CLAIM_TITLE_PREFIXES):
+        return 'title starts with "Proposal:"'
+
+    return None
 
 
 DOCS_LABEL_NAMES = {"docs", "documentation"}
@@ -190,7 +230,9 @@ def days_since(timestamp: str | None, now: datetime | None = None) -> int | None
     return (now - dt).days
 
 
-def compute_status(assigned: bool, linked: LinkedPRResult, contested: bool, reserved: bool) -> str:
+def compute_status(
+    assigned: bool, linked: LinkedPRResult, contested: bool, reserved: bool, author_claimed: bool = False
+) -> str:
     if linked.unsure:
         return "UNSURE"
     if linked.has_linked_pr:
@@ -201,6 +243,8 @@ def compute_status(assigned: bool, linked: LinkedPRResult, contested: bool, rese
         return "CONTESTED"
     if assigned:
         return "CLAIMED"
+    if author_claimed:
+        return "AUTHOR-CLAIMED"
     return "OPEN-FREE"
 
 
@@ -221,8 +265,9 @@ def triage_issue(
     claim_count = count_claim_comments(comments, claim_phrases)
     contested = claim_count >= 2 and not assigned
     fit_tag, matched_keywords = compute_fit(issue, positive_keywords, negative_keywords)
-    reserved_matches = matched_reserved_labels(issue.get("labels", []), reserved_labels)
-    status = compute_status(assigned, linked, contested, bool(reserved_matches))
+    reserved_matches = reserved_hints(issue, reserved_labels)
+    author_claim_reason = author_self_claim(issue, claim_phrases)
+    status = compute_status(assigned, linked, contested, bool(reserved_matches), bool(author_claim_reason))
 
     return {
         "number": issue["number"],
@@ -238,6 +283,7 @@ def triage_issue(
         "matched_keywords": matched_keywords,
         "staleness_days": days_since(issue.get("updated_at"), now=now),
         "reserved": bool(reserved_matches),
-        "reserved_labels": reserved_matches,
+        "reserved_hints": reserved_matches,
+        "author_claim_reason": author_claim_reason,
         "status": status,
     }

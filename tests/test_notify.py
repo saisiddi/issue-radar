@@ -41,7 +41,7 @@ def make_triage(**overrides):
         "matched_keywords": ["python", "security"],
         "claim_comments": 0,
         "linked_pr_notes": [],
-        "reserved_labels": [],
+        "reserved_hints": [],
     }
     triage.update(overrides)
     return triage
@@ -111,10 +111,20 @@ class TestFormatAlert:
         message = format_alert(triage, make_issue(), REPO_CFG)
         assert "possible work in progress elsewhere: PR #9 in a-fork/repo" in message
 
-    def test_discuss_only_includes_reserved_label(self):
-        triage = make_triage(status="DISCUSS-ONLY", reserved_labels=["gsoc-idea"])
+    def test_discuss_only_includes_reserved_hint(self):
+        triage = make_triage(status="DISCUSS-ONLY", reserved_hints=["gsoc-idea"])
         message = format_alert(triage, make_issue(), REPO_CFG)
-        assert "Reserved label: gsoc-idea" in message
+        assert "Reserved: gsoc-idea" in message
+
+    def test_discuss_only_includes_title_gsoc_hint(self):
+        triage = make_triage(status="DISCUSS-ONLY", reserved_hints=["title mentions GSoC"])
+        message = format_alert(triage, make_issue(), REPO_CFG)
+        assert "Reserved: title mentions GSoC" in message
+
+    def test_author_claimed_includes_reason(self):
+        triage = make_triage(status="AUTHOR-CLAIMED", author_claim_reason='title starts with "Proposal:"')
+        message = format_alert(triage, make_issue(), REPO_CFG)
+        assert 'Author self-claim: title starts with "Proposal:"' in message
 
     def test_contested_includes_claim_count(self):
         triage = make_triage(status="CONTESTED", claim_comments=3)

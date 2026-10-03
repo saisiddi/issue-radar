@@ -3,7 +3,7 @@ import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from radar.config import Config, LimitsConfig, LLMConfig, NotifierConfig, PollConfig, RepoConfig
+from radar.config import Config, LimitsConfig, LLMConfig, NotifierConfig, PollConfig, RepoConfig, SweepConfig
 from radar.github_client import BackoffBudgetExceeded, GitHubAPIError
 from radar.main import GITHUB_TIMESTAMP_FORMAT, resolve_github_token, run_poll, run_sweep
 from radar.state import load_state
@@ -24,6 +24,7 @@ def make_config(repos, notifier_type="telegram", first_run_window_days=3):
         llm=LLMConfig(),
         limits=LimitsConfig(max_total_backoff_seconds=300, max_api_calls_per_run=None),
         poll=PollConfig(first_run_window_days=first_run_window_days),
+        sweep=SweepConfig(),
         state_file="state.json",
         sweep_report_file="sweep_report.md",
     )
@@ -50,12 +51,14 @@ class FakeGitHubClient:
         raise_on_list_issues=None,
         raise_on_detail=None,
         timeline_by_issue=None,
+        comments_by_issue=None,
         **_ignored,
     ):
         self.issues_by_repo = issues_by_repo or {}
         self.raise_on_list_issues = raise_on_list_issues or {}
         self.raise_on_detail = raise_on_detail or {}
         self.timeline_by_issue = timeline_by_issue or {}
+        self.comments_by_issue = comments_by_issue or {}
         self.calls = []
         self.request_count = 0
 
@@ -69,7 +72,7 @@ class FakeGitHubClient:
         self.calls.append(("list_issue_comments", repo, number))
         if (repo, number) in self.raise_on_detail:
             raise self.raise_on_detail[(repo, number)]
-        return iter([])
+        return iter(self.comments_by_issue.get((repo, number), []))
 
     def list_issue_timeline(self, repo, number):
         self.calls.append(("list_issue_timeline", repo, number))
@@ -498,7 +501,7 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        rc = run_sweep(config, dry_run=False, token="tok")
+        rc = run_sweep(config, dry_run=False, token="tok", now=NOW)
 
         assert rc == 0
         content = report_path.read_text()
@@ -522,7 +525,7 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        run_sweep(config, dry_run=False, token="tok")
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
 
         content = report_path.read_text()
         assert "#1" not in content  # CLAIMED
@@ -547,7 +550,7 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        run_sweep(config, dry_run=False, token="tok")
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
 
         content = report_path.read_text()
         assert "#5" in content
@@ -567,7 +570,7 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        run_sweep(config, dry_run=False, token="tok", repo_names=["owner/repo1"])
+        run_sweep(config, dry_run=False, token="tok", repo_names=["owner/repo1"], now=NOW)
 
         repo_calls = {c[1] for c in fake_client.calls if c[0] == "list_issues"}
         assert repo_calls == {"owner/repo1"}
@@ -580,7 +583,7 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        rc = run_sweep(config, dry_run=False, token="tok", repo_names=["owner/does-not-exist"])
+        rc = run_sweep(config, dry_run=False, token="tok", repo_names=["owner/does-not-exist"], now=NOW)
 
         assert rc == 0
         assert "does-not-exist" in capsys.readouterr().err
@@ -597,7 +600,7 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        rc = run_sweep(config, dry_run=False, token="tok")
+        rc = run_sweep(config, dry_run=False, token="tok", now=NOW)
 
         assert rc == 1
         repo2_calls = [c for c in fake_client.calls if c[1] == "owner/repo2"]
@@ -615,7 +618,7 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        rc = run_sweep(config, dry_run=False, token="tok")
+        rc = run_sweep(config, dry_run=False, token="tok", now=NOW)
 
         assert rc == 1
         content = report_path.read_text()
@@ -629,7 +632,7 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        run_sweep(config, dry_run=True, token="tok")
+        run_sweep(config, dry_run=True, token="tok", now=NOW)
 
         out = capsys.readouterr().out
         assert "#1" in out
@@ -643,10 +646,134 @@ class TestRunSweep:
 
         report_path = tmp_path / "sweep_report.md"
         config.sweep_report_file = str(report_path)
-        run_sweep(config, dry_run=False, token="tok")
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
 
         call = next(c for c in fake_client.calls if c[0] == "list_issues")
         assert call[2] is None  # sweep is a full scan, not incremental
+
+    def test_maintainer_replied_column_reflects_reviewer_comment(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=["securestep9"])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "securestep9"}, "body": "looks good"}]},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        line = next(l for l in report_path.read_text().splitlines() if "#1" in l)
+        # columns: # | Title | Status | Fit | Staleness | Maintainer replied? | Likely already fixed?
+        assert line.split("|")[6].strip() == "Yes"
+
+    def test_very_old_unanswered_issue_goes_to_separate_section(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=["securestep9"])
+        config = make_config([repo])
+        very_old = make_issue(1, updated_at="2025-01-01T00:00:00Z")  # ~13 months before NOW
+        fresh = make_issue(2, updated_at="2026-01-25T00:00:00Z")  # a week before NOW
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [very_old, fresh]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = report_path.read_text()
+        main_section, _, old_section = content.partition("### Old / unanswered")
+        assert "#2" in main_section
+        assert "#1" not in main_section
+        assert "#1" in old_section
+
+    def test_maintainer_replied_keeps_old_issue_out_of_unanswered_section(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=["securestep9"])
+        config = make_config([repo])
+        very_old_but_answered = make_issue(1, updated_at="2025-01-01T00:00:00Z")
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [very_old_but_answered]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "securestep9"}, "body": "on it"}]},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = report_path.read_text()
+        assert "### Old / unanswered" not in content
+        assert "#1" in content
+
+    def test_sort_good_fit_before_maybe_fit(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        good = make_issue(1)  # title matches python/security -> GOOD
+        maybe = make_issue(2)
+        maybe["title"] = "Something unrelated"
+        maybe["body"] = ""
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [maybe, good]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = report_path.read_text()
+        assert content.index("#1") < content.index("#2")
+
+    def test_sort_maintainer_replied_before_not_within_same_fit(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=["securestep9"])
+        config = make_config([repo])
+        # Both GOOD fit (title matches python/security); #2 has a
+        # maintainer reply and should sort ahead of #1 despite a higher
+        # issue number.
+        no_reply = make_issue(1)
+        replied = make_issue(2)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [no_reply, replied]},
+            comments_by_issue={("owner/repo", 2): [{"user": {"login": "securestep9"}, "body": "on it"}]},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = report_path.read_text()
+        assert content.index("#2") < content.index("#1")
+
+    def test_sort_most_recent_activity_first_within_same_tier(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        older = make_issue(1, updated_at="2026-01-01T00:00:00Z")
+        newer = make_issue(2, updated_at="2026-01-30T00:00:00Z")
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [older, newer]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = report_path.read_text()
+        assert content.index("#2") < content.index("#1")  # more recent (#2) first
+
+    def test_pr_exclusion_clarified_in_output(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [make_issue(1)]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        err = capsys.readouterr().err
+        assert "pull requests excluded" in err.lower()
+        assert "1" in err  # scanned count
+
+        report_content = report_path.read_text()
+        assert "open_issues_count" in report_content
 
 
 class TestRunPollNotifierConfig:

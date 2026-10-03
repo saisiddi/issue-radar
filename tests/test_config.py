@@ -1,6 +1,16 @@
 from pathlib import Path
 
-from radar.config import Config, LimitsConfig, LLMConfig, NotifierConfig, PollConfig, RepoConfig, effective_keywords, load_config
+from radar.config import (
+    Config,
+    LimitsConfig,
+    LLMConfig,
+    NotifierConfig,
+    PollConfig,
+    RepoConfig,
+    SweepConfig,
+    effective_keywords,
+    load_config,
+)
 
 CONFIG_PATH = Path(__file__).parent.parent / "radar" / "config.yaml"
 
@@ -69,6 +79,11 @@ def test_load_config_poll_bootstrap_window():
     assert config.poll.first_run_window_days == 3
 
 
+def test_load_config_sweep_very_old_threshold():
+    config = load_config(CONFIG_PATH)
+    assert config.sweep.very_old_days_threshold == 180
+
+
 class TestPerRepoOverrides:
     def test_repo_without_overrides_has_none_fields(self, tmp_path):
         path = tmp_path / "config.yaml"
@@ -133,6 +148,7 @@ class TestPerRepoOverrides:
             llm=LLMConfig(),
             limits=LimitsConfig(),
             poll=PollConfig(),
+            sweep=SweepConfig(),
             state_file="state.json",
             sweep_report_file="sweep_report.md",
         )

@@ -49,6 +49,14 @@ class PollConfig:
 
 
 @dataclass
+class SweepConfig:
+    # A kept issue with no maintainer-reviewer comment and no activity for
+    # at least this many days goes in the report's separate "Old /
+    # unanswered" section instead of the main table.
+    very_old_days_threshold: int = 180
+
+
+@dataclass
 class Config:
     repos: list[RepoConfig]
     positive_keywords: list[str]
@@ -60,6 +68,7 @@ class Config:
     llm: LLMConfig
     limits: LimitsConfig
     poll: PollConfig
+    sweep: SweepConfig
     state_file: str
     sweep_report_file: str
 
@@ -84,6 +93,7 @@ def load_config(path: str | Path) -> Config:
     llm_raw = raw.get("llm", {})
     limits_raw = raw.get("limits", {})
     poll_raw = raw.get("poll", {})
+    sweep_raw = raw.get("sweep", {})
 
     return Config(
         repos=repos,
@@ -96,6 +106,7 @@ def load_config(path: str | Path) -> Config:
         llm=LLMConfig(**llm_raw),
         limits=LimitsConfig(**limits_raw),
         poll=PollConfig(**poll_raw),
+        sweep=SweepConfig(**sweep_raw),
         state_file=raw.get("state_file", "state.json"),
         sweep_report_file=raw.get("sweep_report_file", "sweep_report.md"),
     )

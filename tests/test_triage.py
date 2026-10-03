@@ -3,11 +3,14 @@ from datetime import datetime, timezone
 from radar.triage import (
     LinkedPRResult,
     analyze_linked_prs,
+    author_self_claim,
     compute_fit,
     compute_status,
     count_claim_comments,
     days_since,
+    maintainer_replied,
     matched_reserved_labels,
+    reserved_hints,
     triage_issue,
 )
 
@@ -213,6 +216,27 @@ class TestClaimComments:
         assert count_claim_comments([], ["assign me"]) == 0
 
 
+class TestMaintainerReplied:
+    def test_true_when_reviewer_commented(self):
+        comments = [{"user": {"login": "someuser"}}, {"user": {"login": "securestep9"}}]
+        assert maintainer_replied(comments, ["securestep9", "arkid15r"]) is True
+
+    def test_false_when_no_reviewer_commented(self):
+        comments = [{"user": {"login": "someuser"}}, {"user": {"login": "another"}}]
+        assert maintainer_replied(comments, ["securestep9"]) is False
+
+    def test_false_with_no_comments(self):
+        assert maintainer_replied([], ["securestep9"]) is False
+
+    def test_case_insensitive_login_match(self):
+        comments = [{"user": {"login": "SecureStep9"}}]
+        assert maintainer_replied(comments, ["securestep9"]) is True
+
+    def test_comment_with_missing_user_is_ignored(self):
+        comments = [{"user": None}, {"body": "no user key at all"}]
+        assert maintainer_replied(comments, ["securestep9"]) is False
+
+
 class TestFit:
     def test_good_when_only_positive_matches(self):
         issue = {"title": "Fix django security bug", "body": "", "labels": []}
@@ -366,6 +390,64 @@ class TestReservedLabels:
         assert matched_reserved_labels(labels, ["gsoc-idea"]) == []
 
 
+class TestReservedHints:
+    def test_label_hint(self):
+        issue = {"title": "x", "labels": [{"name": "gsoc-idea"}]}
+        assert reserved_hints(issue, ["gsoc-idea"]) == ["gsoc-idea"]
+
+    def test_title_gsoc_hint(self):
+        issue = {"title": "Proposal: Add module - GSoC 2026", "labels": []}
+        assert reserved_hints(issue, []) == ["title mentions GSoC"]
+
+    def test_title_gsoc_case_insensitive(self):
+        issue = {"title": "gsoc idea for next summer", "labels": []}
+        assert reserved_hints(issue, []) == ["title mentions GSoC"]
+
+    def test_both_label_and_title_hint(self):
+        issue = {"title": "GSoC project idea", "labels": [{"name": "gsoc-idea"}]}
+        assert reserved_hints(issue, ["gsoc-idea"]) == ["gsoc-idea", "title mentions GSoC"]
+
+    def test_no_hints(self):
+        issue = {"title": "Fix a bug", "labels": [{"name": "bug"}]}
+        assert reserved_hints(issue, ["gsoc-idea"]) == []
+
+
+class TestAuthorSelfClaim:
+    def test_body_phrase_match(self):
+        issue = {"title": "Add a feature", "body": "I'd like to work on this myself."}
+        reason = author_self_claim(issue, ["i'd like to work"])
+        assert reason is not None
+        assert "i'd like to work" in reason
+
+    def test_happy_to_submit_a_pr_phrase(self):
+        issue = {"title": "Add a feature", "body": "Happy to submit a PR for this."}
+        reason = author_self_claim(issue, ["happy to submit a pr"])
+        assert reason is not None
+
+    def test_i_can_implement_this_phrase(self):
+        issue = {"title": "Add a feature", "body": "I can implement this if no one else is on it."}
+        reason = author_self_claim(issue, ["i can implement this"])
+        assert reason is not None
+
+    def test_proposal_title_prefix_alone_is_sufficient(self):
+        issue = {"title": "Proposal: Add KEV module for CVE-2026-1234", "body": "Some description."}
+        reason = author_self_claim(issue, [])
+        assert reason is not None
+        assert "Proposal" in reason
+
+    def test_proposal_prefix_is_case_insensitive(self):
+        issue = {"title": "PROPOSAL: do a thing", "body": ""}
+        assert author_self_claim(issue, []) is not None
+
+    def test_no_claim_signal_returns_none(self):
+        issue = {"title": "A plain bug report", "body": "It crashes when I run it."}
+        assert author_self_claim(issue, ["i'd like to work"]) is None
+
+    def test_proposal_word_mid_title_does_not_count(self):
+        issue = {"title": "Our proposal process needs docs", "body": ""}
+        assert author_self_claim(issue, []) is None
+
+
 class TestDaysSince:
     def test_computes_day_difference(self):
         now = datetime(2026, 3, 1, tzinfo=timezone.utc)
@@ -399,6 +481,34 @@ class TestComputeStatus:
     def test_open_free(self):
         linked = LinkedPRResult(has_linked_pr=False, unsure=False)
         assert compute_status(assigned=False, linked=linked, contested=False, reserved=False) == "OPEN-FREE"
+
+    def test_author_claimed_when_nothing_else_applies(self):
+        linked = LinkedPRResult(has_linked_pr=False, unsure=False)
+        status = compute_status(
+            assigned=False, linked=linked, contested=False, reserved=False, author_claimed=True
+        )
+        assert status == "AUTHOR-CLAIMED"
+
+    def test_claimed_takes_priority_over_author_claimed(self):
+        linked = LinkedPRResult(has_linked_pr=False, unsure=False)
+        status = compute_status(
+            assigned=True, linked=linked, contested=False, reserved=False, author_claimed=True
+        )
+        assert status == "CLAIMED"
+
+    def test_contested_takes_priority_over_author_claimed(self):
+        linked = LinkedPRResult(has_linked_pr=False, unsure=False)
+        status = compute_status(
+            assigned=False, linked=linked, contested=True, reserved=False, author_claimed=True
+        )
+        assert status == "CONTESTED"
+
+    def test_reserved_takes_priority_over_author_claimed(self):
+        linked = LinkedPRResult(has_linked_pr=False, unsure=False)
+        status = compute_status(
+            assigned=False, linked=linked, contested=False, reserved=True, author_claimed=True
+        )
+        assert status == "DISCUSS-ONLY"
 
 
 class TestTriageIssue:
@@ -475,7 +585,7 @@ class TestTriageIssue:
             positive_keywords=[], negative_keywords=[], claim_phrases=[], reserved_labels=["gsoc-idea"],
         )
         assert result["status"] == "DISCUSS-ONLY"
-        assert result["reserved_labels"] == ["gsoc-idea"]
+        assert result["reserved_hints"] == ["gsoc-idea"]
 
     def test_closed_unmerged_previous_attempt_stays_open_free(self):
         issue = {
@@ -512,3 +622,37 @@ class TestTriageIssue:
         )
         assert result["status"] == "HAS-PR"
         assert result["has_linked_pr"] is True
+
+    def test_proposal_issue_with_no_assignee_is_author_claimed(self):
+        issue = {
+            "number": 6,
+            "title": "Proposal: Add module for CVE-2026-1234",
+            "body": "",
+            "labels": [],
+            "assignees": [],
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        result = triage_issue(
+            issue, [], [], REPO,
+            positive_keywords=[], negative_keywords=[], claim_phrases=[], reserved_labels=[],
+        )
+        assert result["status"] == "AUTHOR-CLAIMED"
+        assert "Proposal" in result["author_claim_reason"]
+
+    def test_gsoc_in_title_is_discuss_only_even_without_label(self):
+        issue = {
+            "number": 7,
+            "title": "Proposal: new scanner module - GSoC 2026",
+            "body": "",
+            "labels": [],
+            "assignees": [],
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        result = triage_issue(
+            issue, [], [], REPO,
+            positive_keywords=[], negative_keywords=[], claim_phrases=[], reserved_labels=["gsoc-idea"],
+        )
+        # Both a Proposal-title author-claim hint AND a GSoC-title reserved
+        # hint apply here; reserved/DISCUSS-ONLY must win.
+        assert result["status"] == "DISCUSS-ONLY"
+        assert result["reserved_hints"] == ["title mentions GSoC"]

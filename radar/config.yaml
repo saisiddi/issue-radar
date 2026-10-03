@@ -51,7 +51,8 @@ skills:
     - javascript-only
     - translation
 
-# Substrings (case-insensitive) that flag a comment as a claim attempt.
+# Substrings (case-insensitive) that flag a comment - or, on the issue's own
+# body, the reporter themselves (see author_self_claim) - as a claim attempt.
 claim_phrases:
   - "assign me"
   - "can i work"
@@ -60,6 +61,8 @@ claim_phrases:
   - "i'll take"
   - "i will take"
   - "i can work on this"
+  - "i can implement this"
+  - "happy to submit a pr"
   - "please assign"
   - "may i work"
 
@@ -106,3 +109,9 @@ poll:
   # every historical open issue and flood you - that's sweep's job. Instead
   # the first run only looks back this many days.
   first_run_window_days: 3
+
+sweep:
+  # In the sweep report, a kept issue with no maintainer-reviewer comment
+  # AND no activity for at least this many days gets split into a separate
+  # "Old / unanswered" section at the bottom instead of the main table.
+  very_old_days_threshold: 180

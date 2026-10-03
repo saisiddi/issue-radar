@@ -75,8 +75,11 @@ def format_alert(
         if triage.get("likely_already_fixed"):
             lines += ["Likely already fixed: a merged same-repo PR already references this issue"]
 
-    if triage["status"] == "DISCUSS-ONLY" and triage.get("reserved_labels"):
-        lines += ["", f"Reserved label: {', '.join(triage['reserved_labels'])}"]
+    if triage["status"] == "DISCUSS-ONLY" and triage.get("reserved_hints"):
+        lines += ["", f"Reserved: {', '.join(triage['reserved_hints'])}"]
+
+    if triage["status"] == "AUTHOR-CLAIMED":
+        lines += ["", f"Author self-claim: {triage.get('author_claim_reason') or 'unspecified'}"]
 
     if triage["status"] == "CONTESTED":
         lines += ["", f"Claim comments: {triage['claim_comments']}"]
