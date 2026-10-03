@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from radar.config import RepoConfig
@@ -10,6 +12,8 @@ from radar.notify import (
     format_alert,
     get_notifier,
 )
+
+NOW = datetime(2026, 3, 1, tzinfo=timezone.utc)
 
 REPO_CFG = RepoConfig(name="owner/repo", org="OrgName", reviewers=["alice", "bob"])
 
@@ -126,6 +130,49 @@ class TestFormatAlert:
         repo_cfg = RepoConfig(name="x/y", org="Z", reviewers=[])
         message = format_alert(make_triage(), make_issue(), repo_cfg)
         assert "none listed" in message
+
+    def test_likely_already_fixed_line_shown_for_unsure(self):
+        triage = make_triage(
+            status="UNSURE",
+            linked_pr_notes=["PR #7 (merged) mentions this issue but has no closing keyword"],
+            likely_already_fixed=True,
+        )
+        message = format_alert(triage, make_issue(), REPO_CFG)
+        assert "Likely already fixed: a merged same-repo PR already references this issue" in message
+
+    def test_likely_already_fixed_line_absent_when_false(self):
+        triage = make_triage(status="UNSURE", linked_pr_notes=["some reason"], likely_already_fixed=False)
+        message = format_alert(triage, make_issue(), REPO_CFG)
+        assert "Likely already fixed" not in message
+
+
+class TestOldIssueNote:
+    def test_shown_when_older_than_threshold(self):
+        issue = make_issue(created_at="2026-01-01T00:00:00Z", updated_at="2026-02-25T00:00:00Z")
+        message = format_alert(make_triage(), issue, REPO_CFG, staleness_days_threshold=30, now=NOW)
+        assert "Old issue (created 59 days ago), recent activity on 2026-02-25" in message
+
+    def test_absent_when_within_threshold(self):
+        issue = make_issue(created_at="2026-02-15T00:00:00Z", updated_at="2026-02-25T00:00:00Z")
+        message = format_alert(make_triage(), issue, REPO_CFG, staleness_days_threshold=30, now=NOW)
+        assert "Old issue" not in message
+
+    def test_absent_exactly_at_threshold(self):
+        # created exactly 30 days before NOW - "older than 30 days" means
+        # strictly more, not inclusive.
+        issue = make_issue(created_at="2026-01-30T00:00:00Z", updated_at="2026-02-25T00:00:00Z")
+        message = format_alert(make_triage(), issue, REPO_CFG, staleness_days_threshold=30, now=NOW)
+        assert "Old issue" not in message
+
+    def test_respects_custom_threshold(self):
+        issue = make_issue(created_at="2026-02-10T00:00:00Z", updated_at="2026-02-25T00:00:00Z")
+        message = format_alert(make_triage(), issue, REPO_CFG, staleness_days_threshold=10, now=NOW)
+        assert "Old issue" in message
+
+    def test_absent_when_no_created_at(self):
+        issue = make_issue(created_at=None)
+        message = format_alert(make_triage(), issue, REPO_CFG, staleness_days_threshold=30, now=NOW)
+        assert "Old issue" not in message
 
 
 class TestDryRunNotifier:

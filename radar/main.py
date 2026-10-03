@@ -185,7 +185,7 @@ def run_poll(
             if result["status"] not in ALERTABLE_STATUSES:
                 continue
 
-            message = format_alert(result, issue, repo_cfg)
+            message = format_alert(result, issue, repo_cfg, config.staleness_days_threshold, now=now)
             try:
                 notifier.send(message)
             except NotifierError as e:

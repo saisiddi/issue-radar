@@ -22,6 +22,7 @@ def cross_ref(
     merged_at=None,
     repo_full_name=REPO,
     is_pr=True,
+    author=None,
 ):
     source_issue = {
         "number": number,
@@ -30,6 +31,7 @@ def cross_ref(
         "title": title,
         "body": body,
         "repository": {"full_name": repo_full_name},
+        "user": {"login": author} if author else None,
     }
     if is_pr:
         source_issue["pull_request"] = {
@@ -137,6 +139,66 @@ class TestAnalyzeLinkedPRs:
         assert result.has_linked_pr is False
         assert result.notes == []
 
+    def test_same_author_open_pr_without_closing_keyword_is_has_pr(self):
+        # The issue-and-PR-pair pattern (IntelOwl #4047, Nettacker #1521
+        # style): same person opened both, no closing keyword needed.
+        timeline = [cross_ref(7, body="see #42 for context", state="open", author="dev-aditya")]
+        result = analyze_linked_prs(timeline, REPO, 42, issue_author="dev-aditya")
+        assert result.has_linked_pr is True
+        assert result.unsure is False
+        assert "issue author opened PR #7" in result.notes[0]
+
+    def test_different_author_bare_mention_stays_unsure(self):
+        timeline = [cross_ref(7, body="see #42 for context", state="open", author="someone-else")]
+        result = analyze_linked_prs(timeline, REPO, 42, issue_author="dev-aditya")
+        assert result.has_linked_pr is False
+        assert result.unsure is True
+
+    def test_same_author_heuristic_does_not_apply_when_merged_not_open(self):
+        # Spec says "same author AND open" - a merged PR by the same
+        # author without a closing keyword stays an ambiguous mention,
+        # not an automatic HAS-PR.
+        timeline = [
+            cross_ref(7, body="see #42", state="closed", merged_at="2026-01-01T00:00:00Z", author="dev-aditya")
+        ]
+        result = analyze_linked_prs(timeline, REPO, 42, issue_author="dev-aditya")
+        assert result.has_linked_pr is False
+        assert result.unsure is True
+
+    def test_closing_keyword_still_wins_over_author_match_path(self):
+        timeline = [cross_ref(7, body="Closes #42", state="open", author="dev-aditya")]
+        result = analyze_linked_prs(timeline, REPO, 42, issue_author="dev-aditya")
+        assert result.has_linked_pr is True
+        assert "references closing this issue" in result.notes[0]
+
+    def test_no_issue_author_provided_falls_back_to_ambiguous(self):
+        timeline = [cross_ref(7, body="see #42", state="open", author="dev-aditya")]
+        result = analyze_linked_prs(timeline, REPO, 42, issue_author=None)
+        assert result.has_linked_pr is False
+        assert result.unsure is True
+
+
+class TestLikelyAlreadyFixed:
+    def test_true_when_same_repo_merged_pr_exists_even_if_unsure(self):
+        timeline = [cross_ref(7, body="see #42", merged_at="2026-01-01T00:00:00Z", state="closed")]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.unsure is True  # ambiguous mention, no closing keyword
+        assert result.likely_already_fixed is True
+
+    def test_false_when_only_closed_unmerged(self):
+        timeline = [cross_ref(7, body="Fixes #42", state="closed", merged_at=None)]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.likely_already_fixed is False
+
+    def test_false_for_fork_merge(self):
+        timeline = [cross_ref(7, body="see #42", merged_at="2026-01-01T00:00:00Z", repo_full_name="a-fork/repo")]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.likely_already_fixed is False
+
+    def test_false_when_no_references(self):
+        result = analyze_linked_prs([], REPO, 42)
+        assert result.likely_already_fixed is False
+
 
 class TestClaimComments:
     def test_counts_matching_phrases(self):
@@ -178,6 +240,119 @@ class TestFit:
     def test_label_names_are_searched(self):
         issue = {"title": "", "body": "", "labels": [{"name": "security"}]}
         fit, matched = compute_fit(issue, ["security"], [])
+        assert fit == "GOOD"
+
+
+class TestDocsDetector:
+    def test_title_prefix_docs_colon(self):
+        # Nettacker #1758 style.
+        issue = {
+            "title": "docs: fix outdated tcp_connect_port_scan references in Usage.md",
+            "body": "",
+            "labels": [],
+        }
+        fit, matched = compute_fit(issue, ["module", "yaml"], ["react"])
+        assert fit == "DOCS"
+        assert matched == ["docs"]
+
+    def test_title_prefix_documentation(self):
+        issue = {"title": "Documentation: update install guide", "body": "", "labels": []}
+        fit, _ = compute_fit(issue, [], [])
+        assert fit == "DOCS"
+
+    def test_docs_label(self):
+        issue = {"title": "Fix a typo", "body": "", "labels": [{"name": "documentation"}]}
+        fit, _ = compute_fit(issue, [], [])
+        assert fit == "DOCS"
+
+    def test_docs_word_mid_title_does_not_trigger(self):
+        # Only a prefix match counts, not "docs" appearing anywhere.
+        issue = {"title": "Improve docs", "body": "", "labels": []}
+        fit, _ = compute_fit(issue, ["improve"], [])
+        assert fit != "DOCS"
+
+    def test_docs_overrides_keyword_scoring_entirely(self):
+        issue = {
+            "title": "docs: security scanner module cleanup",
+            "body": "react frontend css ui javascript-only",
+            "labels": [{"name": "bug"}],
+        }
+        fit, matched = compute_fit(issue, ["security", "scanner", "module", "bug"], ["react", "frontend"])
+        assert fit == "DOCS"
+        assert matched == ["docs"]
+
+
+class TestFitWeighting:
+    def test_label_signal_dominates_noisy_dependency_list_body(self):
+        # IntelOwl #3973 style: "bug" label plus a title with no keyword
+        # signal, and a body that's a long dependency/vuln report
+        # mentioning several negative keywords. Old behavior: body
+        # negatives + no title positive -> MAYBE. New behavior: the
+        # strong "bug" label signal should dominate -> GOOD.
+        body = (
+            "## What happened\nI am not sure if we are concerned or this is a known thing.\n"
+            "trivy vuln scanner flagged:\n"
+            + "\n".join(f"- react-{i}, frontend-lib-{i}, css-loader-{i}, ui-kit-{i}" for i in range(20))
+        )
+        issue = {
+            "title": "Deprecated and vulnerable dependencies",
+            "body": body,
+            "labels": [{"name": "bug"}, {"name": "stale"}],
+        }
+        positive = ["python", "django", "bug", "security", "scanner", "module", "yaml", "test", "api"]
+        negative = ["react", "frontend", "css", "ui", "javascript-only", "translation"]
+
+        fit, matched = compute_fit(issue, positive, negative)
+
+        assert fit == "GOOD"
+        assert "bug" in matched
+
+    def test_negative_keywords_past_500_chars_are_ignored(self):
+        padding = "x" * 600
+        issue = {
+            "title": "A backend python tool",
+            "body": padding + " react frontend",  # negative keywords land past the cutoff
+            "labels": [],
+        }
+        fit, matched = compute_fit(issue, ["python"], ["react", "frontend"])
+        assert fit == "GOOD"
+        assert not any(k in matched for k in ["react", "frontend", "-react", "-frontend"])
+
+    def test_negative_keywords_within_500_chars_still_count(self):
+        issue = {
+            "title": "A backend tool",  # no strong signal either way
+            "body": "react frontend",  # within the first 500 chars
+            "labels": [],
+        }
+        fit, matched = compute_fit(issue, [], ["react", "frontend"])
+        assert fit == "SKIP"
+
+    def test_body_contribution_is_capped_regardless_of_match_count(self):
+        # No strong (label/title) signal; body has many positive AND many
+        # negative keyword hits within the first 500 chars. Each side
+        # should contribute at most one point, netting to a tie -> MAYBE,
+        # not a SKIP or GOOD driven by raw match count.
+        issue = {
+            "title": "",
+            "body": "python django security scanner module react frontend css ui",
+            "labels": [],
+        }
+        positive = ["python", "django", "security", "scanner", "module"]
+        negative = ["react", "frontend", "css", "ui"]
+        fit, matched = compute_fit(issue, positive, negative)
+        assert fit == "MAYBE"
+        assert set(matched) == {
+            "python", "django", "security", "scanner", "module",
+            "-react", "-frontend", "-css", "-ui",
+        }
+
+    def test_strong_positive_in_title_beats_body_negative_noise(self):
+        issue = {
+            "title": "python security module fix",
+            "body": "mentions react and frontend in passing",
+            "labels": [],
+        }
+        fit, _ = compute_fit(issue, ["python", "security", "module"], ["react", "frontend"])
         assert fit == "GOOD"
 
 

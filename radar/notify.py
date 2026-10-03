@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
 import requests
 
@@ -11,6 +12,7 @@ FOOTER = "Read the issue and the code before commenting. Ask for assignment with
 
 TELEGRAM_MAX_LENGTH = 4096
 DISCORD_MAX_LENGTH = 2000
+DEFAULT_STALENESS_DAYS_THRESHOLD = 30
 
 
 class NotifierError(Exception):
@@ -32,10 +34,25 @@ def _label_names(labels: list) -> list[str]:
     return [label.get("name") if isinstance(label, dict) else str(label) for label in labels]
 
 
-def format_alert(triage: dict, issue: dict, repo_cfg: RepoConfig) -> str:
+def _old_issue_note(issue: dict, staleness_days_threshold: int, now: datetime | None = None) -> str | None:
+    created_days = days_since(issue.get("created_at"), now=now)
+    if created_days is None or created_days <= staleness_days_threshold:
+        return None
+    updated_at = issue.get("updated_at") or ""
+    activity_date = updated_at[:10] or "unknown date"
+    return f"Old issue (created {created_days} days ago), recent activity on {activity_date}"
+
+
+def format_alert(
+    triage: dict,
+    issue: dict,
+    repo_cfg: RepoConfig,
+    staleness_days_threshold: int = DEFAULT_STALENESS_DAYS_THRESHOLD,
+    now: datetime | None = None,
+) -> str:
     labels = ", ".join(_label_names(issue.get("labels", []))) or "none"
     author = (issue.get("user") or {}).get("login", "unknown")
-    age_days = days_since(issue.get("created_at"))
+    age_days = days_since(issue.get("created_at"), now=now)
     reviewers = ", ".join(repo_cfg.reviewers) if repo_cfg.reviewers else "none listed"
     matched = ", ".join(triage.get("matched_keywords") or []) or "none"
 
@@ -55,6 +72,8 @@ def format_alert(triage: dict, issue: dict, repo_cfg: RepoConfig) -> str:
     if triage["status"] == "UNSURE":
         reason = "; ".join(triage.get("linked_pr_notes") or []) or "uncertain signal, check manually"
         lines += ["", f"Why UNSURE: {reason}"]
+        if triage.get("likely_already_fixed"):
+            lines += ["Likely already fixed: a merged same-repo PR already references this issue"]
 
     if triage["status"] == "DISCUSS-ONLY" and triage.get("reserved_labels"):
         lines += ["", f"Reserved label: {', '.join(triage['reserved_labels'])}"]
@@ -67,6 +86,10 @@ def format_alert(triage: dict, issue: dict, repo_cfg: RepoConfig) -> str:
     abandoned_notes = [n for n in (triage.get("linked_pr_notes") or []) if "closed unmerged" in n]
     if abandoned_notes and triage["status"] != "UNSURE":
         lines += ["", "Note: " + "; ".join(abandoned_notes)]
+
+    old_issue_note = _old_issue_note(issue, staleness_days_threshold, now=now)
+    if old_issue_note:
+        lines += ["", old_issue_note]
 
     lines += ["", FOOTER]
     return "\n".join(lines)

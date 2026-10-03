@@ -22,6 +22,7 @@ class PRReference:
     number: int | None
     url: str
     repo: str
+    author: str | None
     merged: bool
     open: bool
     same_repo: bool
@@ -32,6 +33,7 @@ class PRReference:
 class LinkedPRResult:
     has_linked_pr: bool
     unsure: bool
+    likely_already_fixed: bool = False
     notes: list[str] = field(default_factory=list)
 
 
@@ -63,6 +65,7 @@ def _extract_pr_references(timeline: list[dict], issue_repo: str, issue_number: 
                 number=src_issue.get("number"),
                 url=src_issue.get("html_url") or pr_info.get("html_url") or "",
                 repo=repo_full_name or "unknown",
+                author=(src_issue.get("user") or {}).get("login"),
                 merged=bool(pr_info.get("merged_at")),
                 open=src_issue.get("state") == "open",
                 same_repo=repo_full_name.lower() == issue_repo.lower(),
@@ -72,7 +75,9 @@ def _extract_pr_references(timeline: list[dict], issue_repo: str, issue_number: 
     return refs
 
 
-def analyze_linked_prs(timeline: list[dict], issue_repo: str, issue_number: int) -> LinkedPRResult:
+def analyze_linked_prs(
+    timeline: list[dict], issue_repo: str, issue_number: int, issue_author: str | None = None
+) -> LinkedPRResult:
     refs = _extract_pr_references(timeline, issue_repo, issue_number)
     has_pr = False
     unsure = False
@@ -89,6 +94,11 @@ def analyze_linked_prs(timeline: list[dict], issue_repo: str, issue_number: int)
             if ref.closes_this_issue:
                 has_pr = True
                 notes.append(f"PR #{ref.number} ({state_word}) references closing this issue")
+            elif ref.open and issue_author and ref.author and ref.author == issue_author:
+                # The issue-and-PR-pair pattern: same person opened both, no
+                # closing keyword needed to trust this is the fix in progress.
+                has_pr = True
+                notes.append(f"issue author opened PR #{ref.number}")
             else:
                 unsure = True
                 notes.append(f"PR #{ref.number} ({state_word}) mentions this issue but has no closing keyword")
@@ -97,7 +107,13 @@ def analyze_linked_prs(timeline: list[dict], issue_repo: str, issue_number: int)
         # Same repo, neither open nor merged: closed without merging.
         notes.append(f"previous attempt #{ref.number} closed unmerged")
 
-    return LinkedPRResult(has_linked_pr=has_pr, unsure=unsure and not has_pr, notes=notes)
+    likely_already_fixed = any(ref.same_repo and ref.merged for ref in refs)
+    return LinkedPRResult(
+        has_linked_pr=has_pr,
+        unsure=unsure and not has_pr,
+        likely_already_fixed=likely_already_fixed,
+        notes=notes,
+    )
 
 
 def count_claim_comments(comments: list[dict], claim_phrases: list[str]) -> int:
@@ -118,22 +134,52 @@ def matched_reserved_labels(labels: list, reserved_labels: list[str]) -> list[st
     return [name for name in names if name in reserved_labels]
 
 
+DOCS_LABEL_NAMES = {"docs", "documentation"}
+BODY_EXCERPT_CHARS = 500
+
+
+def _is_docs_issue(issue: dict) -> bool:
+    if DOCS_LABEL_NAMES & set(_label_names(issue.get("labels", []))):
+        return True
+    title = (issue.get("title") or "").strip().lower()
+    return title.startswith("docs") or title.startswith("documentation")
+
+
 def compute_fit(issue: dict, positive_keywords: list[str], negative_keywords: list[str]) -> tuple[str, list[str]]:
-    haystack = " ".join(
-        _label_names(issue.get("labels", []))
-        + [(issue.get("title") or "").lower(), (issue.get("body") or "").lower()]
-    )
+    if _is_docs_issue(issue):
+        return "DOCS", ["docs"]
 
-    matched_positive = [k for k in positive_keywords if k in haystack]
-    matched_negative = [k for k in negative_keywords if k in haystack]
+    # Labels and title are a strong, deliberate signal; the body is noisy
+    # (e.g. a long dependency list can contain negative keywords that have
+    # nothing to do with what the issue is actually about), so it only
+    # gets searched in its first ~500 chars and can contribute at most one
+    # point each way, regardless of how many keywords it happens to match.
+    strong_text = " ".join(_label_names(issue.get("labels", [])) + [(issue.get("title") or "").lower()])
+    weak_text = (issue.get("body") or "")[:BODY_EXCERPT_CHARS].lower()
 
-    if matched_negative and not matched_positive:
+    strong_positive = [k for k in positive_keywords if k in strong_text]
+    strong_negative = [k for k in negative_keywords if k in strong_text]
+    weak_positive = [k for k in positive_keywords if k not in strong_positive and k in weak_text]
+    weak_negative = [k for k in negative_keywords if k not in strong_negative and k in weak_text]
+
+    matched_positive = strong_positive + weak_positive
+    matched_negative = strong_negative + weak_negative
+
+    score = 2 * len(strong_positive) - 2 * len(strong_negative)
+    score += 1 if weak_positive else 0
+    score -= 1 if weak_negative else 0
+
+    if not matched_negative:
+        return ("GOOD", matched_positive) if matched_positive else ("MAYBE", [])
+    if not matched_positive:
         return "SKIP", matched_negative
-    if matched_positive and not matched_negative:
-        return "GOOD", matched_positive
-    if matched_positive and matched_negative:
-        return "MAYBE", matched_positive + [f"-{k}" for k in matched_negative]
-    return "MAYBE", []
+
+    combined = matched_positive + [f"-{k}" for k in matched_negative]
+    if score > 0:
+        return "GOOD", combined
+    if score < 0:
+        return "SKIP", combined
+    return "MAYBE", combined
 
 
 def days_since(timestamp: str | None, now: datetime | None = None) -> int | None:
@@ -170,7 +216,8 @@ def triage_issue(
     now: datetime | None = None,
 ) -> dict:
     assigned = bool(issue.get("assignees"))
-    linked = analyze_linked_prs(timeline, repo_name, issue["number"])
+    issue_author = (issue.get("user") or {}).get("login")
+    linked = analyze_linked_prs(timeline, repo_name, issue["number"], issue_author=issue_author)
     claim_count = count_claim_comments(comments, claim_phrases)
     contested = claim_count >= 2 and not assigned
     fit_tag, matched_keywords = compute_fit(issue, positive_keywords, negative_keywords)
@@ -183,6 +230,7 @@ def triage_issue(
         "assigned": assigned,
         "has_linked_pr": linked.has_linked_pr,
         "linked_pr_unsure": linked.unsure,
+        "likely_already_fixed": linked.likely_already_fixed,
         "linked_pr_notes": linked.notes,
         "claim_comments": claim_count,
         "contested": contested,
