@@ -55,6 +55,9 @@ def _extract_pr_references(timeline: list[dict], issue_repo: str, issue_number: 
             continue  # a plain issue mentioned this one, not a PR
 
         repo_full_name = (src_issue.get("repository") or {}).get("full_name") or ""
+        # GreedyBear's required PR title format is "<feature>. Closes #999" -
+        # the keyword often lives in the title, not the body, so check both.
+        closing_text = f"{src_issue.get('title') or ''}\n{src_issue.get('body') or ''}"
         refs.append(
             PRReference(
                 number=src_issue.get("number"),
@@ -63,7 +66,7 @@ def _extract_pr_references(timeline: list[dict], issue_repo: str, issue_number: 
                 merged=bool(pr_info.get("merged_at")),
                 open=src_issue.get("state") == "open",
                 same_repo=repo_full_name.lower() == issue_repo.lower(),
-                closes_this_issue=issue_number in _closing_keyword_targets(src_issue.get("body")),
+                closes_this_issue=issue_number in _closing_keyword_targets(closing_text),
             )
         )
     return refs

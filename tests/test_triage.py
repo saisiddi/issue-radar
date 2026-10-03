@@ -17,6 +17,7 @@ REPO = "owner/repo"
 def cross_ref(
     number,
     body="",
+    title="",
     state="open",
     merged_at=None,
     repo_full_name=REPO,
@@ -26,6 +27,7 @@ def cross_ref(
         "number": number,
         "state": state,
         "html_url": f"https://github.com/{repo_full_name}/pull/{number}",
+        "title": title,
         "body": body,
         "repository": {"full_name": repo_full_name},
     }
@@ -51,6 +53,14 @@ class TestAnalyzeLinkedPRs:
 
     def test_open_pr_with_closing_keyword_is_has_pr(self):
         timeline = [cross_ref(7, body="Closes #42", state="open")]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.has_linked_pr is True
+        assert result.unsure is False
+
+    def test_closing_keyword_in_title_only_is_has_pr(self):
+        # GreedyBear requires PR titles like "<feature>. Closes #999" - the
+        # keyword lives in the title, not the body.
+        timeline = [cross_ref(7, title="Add retry logic. Closes #42", body="", state="open")]
         result = analyze_linked_prs(timeline, REPO, 42)
         assert result.has_linked_pr is True
         assert result.unsure is False
