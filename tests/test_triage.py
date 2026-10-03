@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
+from radar.config import load_config
 from radar.triage import (
     LinkedPRResult,
     analyze_linked_prs,
@@ -429,6 +431,28 @@ class TestAuthorSelfClaim:
         reason = author_self_claim(issue, ["i can implement this"])
         assert reason is not None
 
+    def test_greedybear_1668_exact_sentence(self):
+        # Real example that was missed before "happy to take" was added:
+        # GreedyBear #1668's body contains this sentence verbatim.
+        issue = {
+            "title": "Over long hostname in an attacker URL drops a whole honeypot's IOCs",
+            "body": "Happy to take it if the shape looks right.",
+        }
+        reason = author_self_claim(issue, ["happy to take"])
+        assert reason is not None
+        assert "happy to take" in reason
+
+    def test_additional_claim_phrase_variants(self):
+        cases = [
+            ("I can take this one on.", "i can take"),
+            ("Happy to work on this over the weekend.", "happy to work on"),
+            ("I'll take this and send a PR soon.", "i'll take this"),
+            ("I can work on the fix now.", "i can work on"),
+        ]
+        for body, phrase in cases:
+            issue = {"title": "x", "body": body}
+            assert author_self_claim(issue, [phrase]) is not None, body
+
     def test_proposal_title_prefix_alone_is_sufficient(self):
         issue = {"title": "Proposal: Add KEV module for CVE-2026-1234", "body": "Some description."}
         reason = author_self_claim(issue, [])
@@ -442,6 +466,17 @@ class TestAuthorSelfClaim:
     def test_no_claim_signal_returns_none(self):
         issue = {"title": "A plain bug report", "body": "It crashes when I run it."}
         assert author_self_claim(issue, ["i'd like to work"]) is None
+
+    def test_greedybear_1668_matches_against_real_config_claim_phrases(self):
+        # End-to-end: the actual config.yaml claim_phrases list, not a
+        # hand-picked single phrase, must catch this real example.
+        config_path = Path(__file__).parent.parent / "radar" / "config.yaml"
+        config = load_config(config_path)
+        issue = {
+            "title": "Over long hostname in an attacker URL drops a whole honeypot's IOCs",
+            "body": "Happy to take it if the shape looks right.",
+        }
+        assert author_self_claim(issue, config.claim_phrases) is not None
 
     def test_proposal_word_mid_title_does_not_count(self):
         issue = {"title": "Our proposal process needs docs", "body": ""}

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from radar.config import Config, LimitsConfig, LLMConfig, NotifierConfig, PollConfig, RepoConfig, SweepConfig
 from radar.github_client import BackoffBudgetExceeded, GitHubAPIError
-from radar.main import GITHUB_TIMESTAMP_FORMAT, resolve_github_token, run_poll, run_sweep
+from radar.main import GITHUB_TIMESTAMP_FORMAT, _sweep_report_path, resolve_github_token, run_poll, run_sweep
 from radar.state import load_state
 
 NOW = datetime(2026, 2, 1, tzinfo=timezone.utc)
@@ -504,7 +504,7 @@ class TestRunSweep:
         rc = run_sweep(config, dry_run=False, token="tok", now=NOW)
 
         assert rc == 0
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
         assert "owner/repo" in content
         # GOOD-fit issue must be listed ahead of the MAYBE-fit one.
         assert content.index("#1") < content.index("#2")
@@ -527,7 +527,7 @@ class TestRunSweep:
         config.sweep_report_file = str(report_path)
         run_sweep(config, dry_run=False, token="tok", now=NOW)
 
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
         assert "#1" not in content  # CLAIMED
         assert "#2" not in content  # HAS-PR
         assert "#3" in content  # OPEN-FREE
@@ -552,7 +552,7 @@ class TestRunSweep:
         config.sweep_report_file = str(report_path)
         run_sweep(config, dry_run=False, token="tok", now=NOW)
 
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
         assert "#5" in content
         assert "UNSURE" in content
         lines = [l for l in content.splitlines() if "#5" in l]
@@ -621,7 +621,7 @@ class TestRunSweep:
         rc = run_sweep(config, dry_run=False, token="tok", now=NOW)
 
         assert rc == 1
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo2").read_text()
         assert "#2" in content
 
     def test_dry_run_prints_top_rows(self, monkeypatch, tmp_path, capsys):
@@ -651,6 +651,32 @@ class TestRunSweep:
         call = next(c for c in fake_client.calls if c[0] == "list_issues")
         assert call[2] is None  # sweep is a full scan, not incremental
 
+    def test_separate_runs_on_different_repos_do_not_overwrite_each_other(self, monkeypatch, tmp_path):
+        base_report_path = tmp_path / "sweep_report.md"
+
+        repo1 = RepoConfig(name="owner/repo1", org="Org", reviewers=[])
+        config1 = make_config([repo1])
+        config1.sweep_report_file = str(base_report_path)
+        fake_client1 = FakeGitHubClient(issues_by_repo={"owner/repo1": [make_issue(1)]})
+        patch_client(monkeypatch, fake_client1)
+        run_sweep(config1, dry_run=False, token="tok", now=NOW)
+
+        repo2 = RepoConfig(name="owner/repo2", org="Org", reviewers=[])
+        config2 = make_config([repo2])
+        config2.sweep_report_file = str(base_report_path)
+        fake_client2 = FakeGitHubClient(issues_by_repo={"owner/repo2": [make_issue(2)]})
+        patch_client(monkeypatch, fake_client2)
+        run_sweep(config2, dry_run=False, token="tok", now=NOW)
+
+        # Both reports must still exist and contain their own repo's issue -
+        # the second run must not have clobbered the first's file.
+        report1 = _sweep_report_path(base_report_path, "owner/repo1")
+        report2 = _sweep_report_path(base_report_path, "owner/repo2")
+        assert report1.exists() and report2.exists()
+        assert "#1" in report1.read_text()
+        assert "#2" in report2.read_text()
+        assert "#2" not in report1.read_text()
+
     def test_maintainer_replied_column_reflects_reviewer_comment(self, monkeypatch, tmp_path):
         repo = RepoConfig(name="owner/repo", org="Org", reviewers=["securestep9"])
         config = make_config([repo])
@@ -665,7 +691,7 @@ class TestRunSweep:
         config.sweep_report_file = str(report_path)
         run_sweep(config, dry_run=False, token="tok", now=NOW)
 
-        line = next(l for l in report_path.read_text().splitlines() if "#1" in l)
+        line = next(l for l in _sweep_report_path(report_path, "owner/repo").read_text().splitlines() if "#1" in l)
         # columns: # | Title | Status | Fit | Staleness | Maintainer replied? | Likely already fixed?
         assert line.split("|")[6].strip() == "Yes"
 
@@ -681,7 +707,7 @@ class TestRunSweep:
         config.sweep_report_file = str(report_path)
         run_sweep(config, dry_run=False, token="tok", now=NOW)
 
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
         main_section, _, old_section = content.partition("### Old / unanswered")
         assert "#2" in main_section
         assert "#1" not in main_section
@@ -701,7 +727,7 @@ class TestRunSweep:
         config.sweep_report_file = str(report_path)
         run_sweep(config, dry_run=False, token="tok", now=NOW)
 
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
         assert "### Old / unanswered" not in content
         assert "#1" in content
 
@@ -719,7 +745,7 @@ class TestRunSweep:
         config.sweep_report_file = str(report_path)
         run_sweep(config, dry_run=False, token="tok", now=NOW)
 
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
         assert content.index("#1") < content.index("#2")
 
     def test_sort_maintainer_replied_before_not_within_same_fit(self, monkeypatch, tmp_path):
@@ -740,7 +766,7 @@ class TestRunSweep:
         config.sweep_report_file = str(report_path)
         run_sweep(config, dry_run=False, token="tok", now=NOW)
 
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
         assert content.index("#2") < content.index("#1")
 
     def test_sort_most_recent_activity_first_within_same_tier(self, monkeypatch, tmp_path):
@@ -755,7 +781,7 @@ class TestRunSweep:
         config.sweep_report_file = str(report_path)
         run_sweep(config, dry_run=False, token="tok", now=NOW)
 
-        content = report_path.read_text()
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
         assert content.index("#2") < content.index("#1")  # more recent (#2) first
 
     def test_pr_exclusion_clarified_in_output(self, monkeypatch, tmp_path, capsys):
@@ -772,7 +798,7 @@ class TestRunSweep:
         assert "pull requests excluded" in err.lower()
         assert "1" in err  # scanned count
 
-        report_content = report_path.read_text()
+        report_content = _sweep_report_path(report_path, "owner/repo").read_text()
         assert "open_issues_count" in report_content
 
 

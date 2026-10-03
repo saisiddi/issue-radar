@@ -266,7 +266,15 @@ def _sweep_table_row(row: dict) -> str:
     )
 
 
-def _write_sweep_report(sections: dict[str, dict[str, list[dict]]], path: str) -> None:
+def _sweep_report_path(base_path: str | Path, repo_name: str) -> Path:
+    """<base>.md -> <base>_<owner>_<repo>.md, so sweeping multiple repos in
+    separate calls never overwrites an earlier repo's report."""
+    base = Path(base_path)
+    safe_repo = repo_name.replace("/", "_")
+    return base.with_name(f"{base.stem}_{safe_repo}{base.suffix}")
+
+
+def _write_sweep_report(repo_name: str, main_rows: list[dict], old_rows: list[dict], path: str | Path) -> None:
     lines = [
         "# issue-radar sweep report",
         "",
@@ -276,24 +284,21 @@ def _write_sweep_report(sections: dict[str, dict[str, list[dict]]], path: str) -
         "bundles open issues *and* open PRs together, so it reads higher than "
         "the counts below - that's expected, not a bug.",
         "",
+        f"## {repo_name} ({len(main_rows) + len(old_rows)} issues)",
+        "",
+        _sweep_table_header(),
     ]
-    for repo_name, repo_sections in sections.items():
-        main_rows = repo_sections["main"]
-        old_rows = repo_sections["old_unanswered"]
-        lines.append(f"## {repo_name} ({len(main_rows) + len(old_rows)} issues)")
+    for row in main_rows:
+        lines.append(_sweep_table_row(row))
+    lines.append("")
+
+    if old_rows:
+        lines.append(f"### Old / unanswered ({len(old_rows)} issues)")
         lines.append("")
         lines.append(_sweep_table_header())
-        for row in main_rows:
+        for row in old_rows:
             lines.append(_sweep_table_row(row))
         lines.append("")
-
-        if old_rows:
-            lines.append(f"### Old / unanswered ({len(old_rows)} issues)")
-            lines.append("")
-            lines.append(_sweep_table_header())
-            for row in old_rows:
-                lines.append(_sweep_table_row(row))
-            lines.append("")
 
     Path(path).write_text("\n".join(lines))
 
@@ -384,11 +389,15 @@ def run_sweep(
         old_rows.sort(key=_old_unanswered_sort_key)
         sections[repo_cfg.name] = {"main": main_rows, "old_unanswered": old_rows}
 
+        # Written per-repo (not batched at the end) so sweeping multiple
+        # repos in separate calls never overwrites an earlier repo's file.
+        report_path = _sweep_report_path(config.sweep_report_file, repo_cfg.name)
+        _write_sweep_report(repo_cfg.name, main_rows, old_rows, report_path)
+        print(f"Sweep report for {repo_cfg.name} written to {report_path}", file=sys.stderr)
+
         if budget_exhausted:
             break
 
-    _write_sweep_report(sections, config.sweep_report_file)
-    print(f"Sweep report written to {config.sweep_report_file}", file=sys.stderr)
     print(
         f"Open issues scanned (pull requests excluded): {total_issues_scanned}",
         file=sys.stderr,

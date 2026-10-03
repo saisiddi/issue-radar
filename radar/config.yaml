@@ -60,9 +60,14 @@ claim_phrases:
   - "i would like to work"
   - "i'll take"
   - "i will take"
+  - "i'll take this"
   - "i can work on this"
+  - "i can work on"
   - "i can implement this"
   - "happy to submit a pr"
+  - "happy to take"
+  - "i can take"
+  - "happy to work on"
   - "please assign"
   - "may i work"
 
@@ -93,6 +98,9 @@ llm:
   model: null
 
 state_file: state.json
+# Base filename for sweep reports. Each repo gets its own file:
+# sweep_report.md -> sweep_report_<owner>_<repo>.md, so sweeping multiple
+# repos in separate runs never overwrites an earlier repo's report.
 sweep_report_file: sweep_report.md
 
 limits:
