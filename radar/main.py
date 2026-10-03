@@ -20,8 +20,13 @@ from radar.triage import triage_issue
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 DEFAULT_DOTENV_PATH = Path(__file__).parent.parent / ".env"
+# Issues in these statuses are worth a human's attention; CLAIMED and HAS-PR
+# are deliberately excluded everywhere this set is used (poll alerts, the
+# sweep report) - someone's already on it.
 ALERTABLE_STATUSES = {"OPEN-FREE", "CONTESTED", "UNSURE", "DISCUSS-ONLY"}
 GITHUB_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+SWEEP_STATUS_RANK = {"OPEN-FREE": 0, "CONTESTED": 1, "UNSURE": 2, "DISCUSS-ONLY": 3}
+SWEEP_FIT_RANK = {"GOOD": 0, "DOCS": 1, "MAYBE": 2, "SKIP": 3}
 
 
 def load_dotenv(path: Path = DEFAULT_DOTENV_PATH) -> None:
@@ -90,7 +95,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="mode", required=True)
     subparsers.add_parser("poll", help="Alert on new/changed issues since last run", parents=[common])
-    subparsers.add_parser("sweep", help="One-time report over all open issues", parents=[common])
+
+    sweep_parser = subparsers.add_parser(
+        "sweep", help="One-time report over all open issues", parents=[common]
+    )
+    sweep_parser.add_argument(
+        "--repo", action="append", help="Restrict sweep to this repo (repeatable); default: all configured repos"
+    )
 
     return parser
 
@@ -216,8 +227,122 @@ def run_poll(
     return 1 if had_error else 0
 
 
-def run_sweep(config, dry_run: bool) -> int:
-    raise NotImplementedError("implemented in step 5")
+def _sweep_sort_key(row: dict) -> tuple:
+    staleness = row["staleness_days"] if row["staleness_days"] is not None else -1
+    return (
+        SWEEP_STATUS_RANK.get(row["status"], 99),
+        SWEEP_FIT_RANK.get(row["fit_tag"], 99),
+        -staleness,  # most-stale (most neglected) first within a status/fit tier
+    )
+
+
+def _write_sweep_report(sections: dict[str, list[dict]], path: str) -> None:
+    lines = ["# issue-radar sweep report", ""]
+    for repo_name, rows in sections.items():
+        lines.append(f"## {repo_name} ({len(rows)} issues)")
+        lines.append("")
+        lines.append("| # | Title | Status | Fit | Staleness (days) | Likely already fixed? |")
+        lines.append("|---|---|---|---|---|---|")
+        for row in rows:
+            fixed = "Yes" if row.get("likely_already_fixed") else "No"
+            title = (row.get("title") or "").replace("|", "\\|")
+            staleness = row["staleness_days"] if row["staleness_days"] is not None else "?"
+            lines.append(
+                f"| [#{row['number']}]({row.get('html_url', '')}) | {title} | {row['status']} "
+                f"| {row['fit_tag']} | {staleness} | {fixed} |"
+            )
+        lines.append("")
+    Path(path).write_text("\n".join(lines))
+
+
+def run_sweep(config: Config, dry_run: bool, token: str | None, repo_names: list[str] | None = None) -> int:
+    client = GitHubClient(
+        token=token,
+        max_total_backoff_seconds=config.limits.max_total_backoff_seconds,
+        max_requests=config.limits.max_api_calls_per_run,
+    )
+
+    repos_to_sweep = [r for r in config.repos if repo_names is None or r.name in repo_names]
+    if repo_names:
+        known = {r.name for r in config.repos}
+        for name in repo_names:
+            if name not in known:
+                print(f"warning: --repo {name} is not in config.yaml, ignoring", file=sys.stderr)
+
+    had_error = False
+    sections: dict[str, list[dict]] = {}
+
+    for repo_cfg in repos_to_sweep:
+        positive_keywords, negative_keywords, claim_phrases, reserved_labels = effective_keywords(repo_cfg, config)
+        rows: list[dict] = []
+
+        try:
+            issues = list(client.list_issues(repo_cfg.name, since=None, state="open"))
+        except (BackoffBudgetExceeded, RequestBudgetExceeded) as e:
+            print(f"warning: run budget exceeded, stopping before {repo_cfg.name}: {e}", file=sys.stderr)
+            had_error = True
+            break
+        except GitHubAPIError as e:
+            print(f"warning: skipping {repo_cfg.name} after fetch error: {e}", file=sys.stderr)
+            had_error = True
+            continue
+
+        budget_exhausted = False
+        for issue in issues:
+            number = issue["number"]
+            try:
+                comments = list(client.list_issue_comments(repo_cfg.name, number))
+                timeline = list(client.list_issue_timeline(repo_cfg.name, number))
+            except (BackoffBudgetExceeded, RequestBudgetExceeded) as e:
+                print(
+                    f"warning: run budget exceeded while sweeping {repo_cfg.name}#{number}, stopping: {e}",
+                    file=sys.stderr,
+                )
+                had_error = True
+                budget_exhausted = True
+                break
+            except GitHubAPIError as e:
+                print(f"warning: skipping {repo_cfg.name}#{number} after error: {e}", file=sys.stderr)
+                had_error = True
+                continue
+
+            result = triage_issue(
+                issue=issue,
+                comments=comments,
+                timeline=timeline,
+                repo_name=repo_cfg.name,
+                positive_keywords=positive_keywords,
+                negative_keywords=negative_keywords,
+                claim_phrases=claim_phrases,
+                reserved_labels=reserved_labels,
+            )
+
+            if result["status"] not in ALERTABLE_STATUSES:
+                continue  # skip PRs (already excluded by list_issues) and CLAIMED/HAS-PR
+
+            result["html_url"] = issue.get("html_url")
+            rows.append(result)
+
+        rows.sort(key=_sweep_sort_key)
+        sections[repo_cfg.name] = rows
+
+        if budget_exhausted:
+            break
+
+    _write_sweep_report(sections, config.sweep_report_file)
+    print(f"Sweep report written to {config.sweep_report_file}", file=sys.stderr)
+    print(f"API requests used this run: {client.request_count}", file=sys.stderr)
+
+    if dry_run:
+        for repo_name, rows in sections.items():
+            print(f"\n=== {repo_name} ({len(rows)} issues kept) ===")
+            for row in rows[:15]:
+                print(
+                    f"#{row['number']:<6} {row['status']:<12} {row['fit_tag']:<6} "
+                    f"staleness={row['staleness_days']}d  {row['title']}"
+                )
+
+    return 1 if had_error else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -242,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "poll":
         return run_poll(config, config.state_file, dry_run, token)
     elif args.mode == "sweep":
-        return run_sweep(config, dry_run)
+        return run_sweep(config, dry_run, token, getattr(args, "repo", None))
 
     return 1
 

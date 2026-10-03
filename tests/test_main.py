@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from radar.config import Config, LimitsConfig, LLMConfig, NotifierConfig, PollConfig, RepoConfig
 from radar.github_client import BackoffBudgetExceeded, GitHubAPIError
-from radar.main import GITHUB_TIMESTAMP_FORMAT, resolve_github_token, run_poll
+from radar.main import GITHUB_TIMESTAMP_FORMAT, resolve_github_token, run_poll, run_sweep
 from radar.state import load_state
 
 NOW = datetime(2026, 2, 1, tzinfo=timezone.utc)
@@ -44,10 +44,18 @@ def make_issue(number, assignees=None, labels=None, updated_at="2026-01-01T00:00
 
 
 class FakeGitHubClient:
-    def __init__(self, issues_by_repo=None, raise_on_list_issues=None, raise_on_detail=None, **_ignored):
+    def __init__(
+        self,
+        issues_by_repo=None,
+        raise_on_list_issues=None,
+        raise_on_detail=None,
+        timeline_by_issue=None,
+        **_ignored,
+    ):
         self.issues_by_repo = issues_by_repo or {}
         self.raise_on_list_issues = raise_on_list_issues or {}
         self.raise_on_detail = raise_on_detail or {}
+        self.timeline_by_issue = timeline_by_issue or {}
         self.calls = []
         self.request_count = 0
 
@@ -65,7 +73,7 @@ class FakeGitHubClient:
 
     def list_issue_timeline(self, repo, number):
         self.calls.append(("list_issue_timeline", repo, number))
-        return iter([])
+        return iter(self.timeline_by_issue.get((repo, number), []))
 
 
 def patch_client(monkeypatch, fake_client):
@@ -451,6 +459,194 @@ class TestLoadDotenv:
         from radar.main import load_dotenv
 
         load_dotenv(tmp_path / "does_not_exist.env")  # must not raise
+
+
+def make_closing_pr_event(pr_number, target_issue_number, repo_full_name="owner/repo", state="open", merged_at=None):
+    return {
+        "event": "cross-referenced",
+        "source": {
+            "type": "issue",
+            "issue": {
+                "number": pr_number,
+                "state": state,
+                "title": "",
+                "body": f"Closes #{target_issue_number}",
+                "repository": {"full_name": repo_full_name},
+                "html_url": f"https://github.com/{repo_full_name}/pull/{pr_number}",
+                "pull_request": {
+                    "url": f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}",
+                    "html_url": f"https://github.com/{repo_full_name}/pull/{pr_number}",
+                    "merged_at": merged_at,
+                },
+            },
+        },
+    }
+
+
+class TestRunSweep:
+    def test_report_written_grouped_and_sorted(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+
+        good_issue = make_issue(1)  # title has "python security bug" -> GOOD fit
+        maybe_issue = make_issue(2)
+        maybe_issue["title"] = "Improve something unrelated"
+        maybe_issue["body"] = ""
+
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [maybe_issue, good_issue]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        rc = run_sweep(config, dry_run=False, token="tok")
+
+        assert rc == 0
+        content = report_path.read_text()
+        assert "owner/repo" in content
+        # GOOD-fit issue must be listed ahead of the MAYBE-fit one.
+        assert content.index("#1") < content.index("#2")
+
+    def test_skips_claimed_and_has_pr(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+
+        claimed = make_issue(1, assignees=[{"login": "x"}])
+        has_pr = make_issue(2)
+        free = make_issue(3)
+
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [claimed, has_pr, free]},
+            timeline_by_issue={("owner/repo", 2): [make_closing_pr_event(99, 2)]},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok")
+
+        content = report_path.read_text()
+        assert "#1" not in content  # CLAIMED
+        assert "#2" not in content  # HAS-PR
+        assert "#3" in content  # OPEN-FREE
+
+    def test_likely_already_fixed_column(self, monkeypatch, tmp_path):
+        # Same-repo merged PR but no closing keyword -> UNSURE, kept in the
+        # report, flagged as likely already fixed.
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(5)
+        timeline_event = make_closing_pr_event(50, target_issue_number=999, state="closed", merged_at="2026-01-01T00:00:00Z")
+        # body references #5 but without a closing keyword
+        timeline_event["source"]["issue"]["body"] = "see #5"
+
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            timeline_by_issue={("owner/repo", 5): [timeline_event]},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok")
+
+        content = report_path.read_text()
+        assert "#5" in content
+        assert "UNSURE" in content
+        lines = [l for l in content.splitlines() if "#5" in l]
+        assert "Yes" in lines[0]
+
+    def test_repo_filter_restricts_to_named_repo(self, monkeypatch, tmp_path):
+        repo1 = RepoConfig(name="owner/repo1", org="Org", reviewers=[])
+        repo2 = RepoConfig(name="owner/repo2", org="Org", reviewers=[])
+        config = make_config([repo1, repo2])
+
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo1": [make_issue(1)], "owner/repo2": [make_issue(2)]}
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", repo_names=["owner/repo1"])
+
+        repo_calls = {c[1] for c in fake_client.calls if c[0] == "list_issues"}
+        assert repo_calls == {"owner/repo1"}
+
+    def test_unknown_repo_filter_warns_but_does_not_crash(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        rc = run_sweep(config, dry_run=False, token="tok", repo_names=["owner/does-not-exist"])
+
+        assert rc == 0
+        assert "does-not-exist" in capsys.readouterr().err
+
+    def test_budget_exceeded_stops_remaining_repos(self, monkeypatch, tmp_path):
+        repo1 = RepoConfig(name="owner/repo1", org="Org", reviewers=[])
+        repo2 = RepoConfig(name="owner/repo2", org="Org", reviewers=[])
+        config = make_config([repo1, repo2])
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo2": [make_issue(2)]},
+            raise_on_list_issues={"owner/repo1": BackoffBudgetExceeded("budget blown")},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        rc = run_sweep(config, dry_run=False, token="tok")
+
+        assert rc == 1
+        repo2_calls = [c for c in fake_client.calls if c[1] == "owner/repo2"]
+        assert repo2_calls == []
+
+    def test_generic_error_skips_repo_and_continues(self, monkeypatch, tmp_path):
+        repo1 = RepoConfig(name="owner/repo1", org="Org", reviewers=[])
+        repo2 = RepoConfig(name="owner/repo2", org="Org", reviewers=[])
+        config = make_config([repo1, repo2])
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo2": [make_issue(2)]},
+            raise_on_list_issues={"owner/repo1": GitHubAPIError("boom", 404)},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        rc = run_sweep(config, dry_run=False, token="tok")
+
+        assert rc == 1
+        content = report_path.read_text()
+        assert "#2" in content
+
+    def test_dry_run_prints_top_rows(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [make_issue(1)]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=True, token="tok")
+
+        out = capsys.readouterr().out
+        assert "#1" in out
+        assert "OPEN-FREE" in out
+
+    def test_sweep_uses_since_none_fetches_all_open_issues(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok")
+
+        call = next(c for c in fake_client.calls if c[0] == "list_issues")
+        assert call[2] is None  # sweep is a full scan, not incremental
 
 
 class TestRunPollNotifierConfig:
