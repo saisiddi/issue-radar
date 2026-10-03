@@ -10,6 +10,7 @@ API_VERSION = "2022-11-28"
 PER_PAGE = 100
 MAX_ATTEMPTS = 6
 MAX_BACKOFF_SECONDS = 900
+DEFAULT_MAX_TOTAL_BACKOFF_SECONDS = 300  # cap per-run sleep; a long wait just burns Actions minutes
 
 
 class GitHubAPIError(Exception):
@@ -24,11 +25,30 @@ class GitHubAPIError(Exception):
         self.status_code = status_code
 
 
+class BackoffBudgetExceeded(GitHubAPIError):
+    """Cumulative rate-limit sleep for this run exceeded its budget."""
+
+
+class RequestBudgetExceeded(GitHubAPIError):
+    """This run issued more HTTP requests than its configured cap."""
+
+
 class GitHubClient:
-    def __init__(self, token: str | None = None, base_url: str = API_BASE, session: requests.Session | None = None):
+    def __init__(
+        self,
+        token: str | None = None,
+        base_url: str = API_BASE,
+        session: requests.Session | None = None,
+        max_total_backoff_seconds: float = DEFAULT_MAX_TOTAL_BACKOFF_SECONDS,
+        max_requests: int | None = None,
+    ):
         self.token = token
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
+        self.max_total_backoff_seconds = max_total_backoff_seconds
+        self.max_requests = max_requests
+        self.total_backoff_seconds = 0.0
+        self.request_count = 0
 
     def _headers(self) -> dict:
         headers = {
@@ -42,14 +62,19 @@ class GitHubClient:
     def _request(self, method: str, url: str, params: dict | None = None) -> requests.Response:
         response = None
         for attempt in range(MAX_ATTEMPTS):
+            if self.max_requests is not None and self.request_count >= self.max_requests:
+                raise RequestBudgetExceeded(
+                    f"Hit the {self.max_requests}-request budget for this run before {method} {url}"
+                )
+            self.request_count += 1
             response = self.session.request(method, url, headers=self._headers(), params=params, timeout=30)
 
             if response.status_code in (403, 429) and self._is_rate_limited(response):
-                time.sleep(self._wait_seconds(response, attempt))
+                self._sleep_within_budget(self._wait_seconds(response, attempt))
                 continue
 
             if response.status_code >= 500:
-                time.sleep(min(2**attempt, MAX_BACKOFF_SECONDS))
+                self._sleep_within_budget(min(2**attempt, MAX_BACKOFF_SECONDS))
                 continue
 
             return response
@@ -58,6 +83,15 @@ class GitHubClient:
             f"Exhausted retries for {method} {url} (last status {response.status_code})",
             response.status_code,
         )
+
+    def _sleep_within_budget(self, seconds: float) -> None:
+        self.total_backoff_seconds += seconds
+        if self.total_backoff_seconds > self.max_total_backoff_seconds:
+            raise BackoffBudgetExceeded(
+                f"Cumulative backoff ({self.total_backoff_seconds:.0f}s) exceeded the "
+                f"{self.max_total_backoff_seconds:.0f}s budget for this run"
+            )
+        time.sleep(seconds)
 
     @staticmethod
     def _is_rate_limited(response: requests.Response) -> bool:

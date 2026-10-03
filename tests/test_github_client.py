@@ -2,7 +2,12 @@ from unittest.mock import patch
 
 import pytest
 
-from radar.github_client import GitHubAPIError, GitHubClient
+from radar.github_client import (
+    BackoffBudgetExceeded,
+    GitHubAPIError,
+    GitHubClient,
+    RequestBudgetExceeded,
+)
 
 
 class FakeResponse:
@@ -150,3 +155,57 @@ def test_no_auth_header_when_token_missing():
     list(client.list_issues("owner/repo"))
 
     assert "Authorization" not in session.calls[0]["headers"]
+
+
+def test_backoff_budget_exceeded_stops_sleeping():
+    # Reset is far enough away that a single wait blows the whole budget.
+    rate_limited = FakeResponse(
+        status_code=403,
+        headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "10000"},
+    )
+    session = FakeSession([rate_limited])
+    client = GitHubClient(token="t", session=session, max_total_backoff_seconds=60)
+
+    with patch("radar.github_client.time.time", return_value=0), patch("radar.github_client.time.sleep") as sleep:
+        with pytest.raises(BackoffBudgetExceeded):
+            list(client.list_issues("owner/repo"))
+
+    sleep.assert_not_called()
+
+
+def test_backoff_budget_allows_waits_under_cap():
+    rate_limited = FakeResponse(status_code=429, headers={"Retry-After": "5"})
+    ok = FakeResponse(json_data=[{"number": 1}])
+    session = FakeSession([rate_limited, ok])
+    client = GitHubClient(token="t", session=session, max_total_backoff_seconds=60)
+
+    with patch("radar.github_client.time.sleep") as sleep:
+        results = list(client.list_issues("owner/repo"))
+
+    sleep.assert_called_once_with(5.0)
+    assert results == [{"number": 1}]
+
+
+def test_request_budget_exceeded_before_sending():
+    session = FakeSession([FakeResponse(json_data=[{"number": 1}])])
+    client = GitHubClient(token="t", session=session, max_requests=0)
+
+    with pytest.raises(RequestBudgetExceeded):
+        list(client.list_issues("owner/repo"))
+
+    assert len(session.calls) == 0
+
+
+def test_request_budget_allows_exactly_the_cap():
+    page1 = FakeResponse(
+        json_data=[{"number": 1}],
+        links={"next": {"url": "https://api.github.com/repos/owner/repo/issues?page=2"}},
+    )
+    page2 = FakeResponse(json_data=[{"number": 2}])
+    session = FakeSession([page1, page2])
+    client = GitHubClient(token="t", session=session, max_requests=2)
+
+    results = list(client.list_issues("owner/repo"))
+
+    assert [r["number"] for r in results] == [1, 2]
+    assert client.request_count == 2
