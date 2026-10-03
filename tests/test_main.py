@@ -1,10 +1,11 @@
 import json
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 from radar.config import Config, LimitsConfig, LLMConfig, NotifierConfig, PollConfig, RepoConfig
 from radar.github_client import BackoffBudgetExceeded, GitHubAPIError
-from radar.main import GITHUB_TIMESTAMP_FORMAT, run_poll
+from radar.main import GITHUB_TIMESTAMP_FORMAT, resolve_github_token, run_poll
 from radar.state import load_state
 
 NOW = datetime(2026, 2, 1, tzinfo=timezone.utc)
@@ -334,6 +335,92 @@ class TestRunPollErrorHandling:
         assert rc == 1
         repo2_calls = [c for c in fake_client.calls if c[1] == "owner/repo2"]
         assert repo2_calls == []  # never reached
+
+
+def _fake_gh_run(returncode=0, stdout="", raise_exc=None):
+    def _run(args, capture_output=None, text=None, timeout=None):
+        if raise_exc:
+            raise raise_exc
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr="")
+
+    return _run
+
+
+class TestResolveGithubToken:
+    def test_prefers_gh_cli_when_logged_in(self, monkeypatch):
+        monkeypatch.setattr("radar.main.subprocess.run", _fake_gh_run(returncode=0, stdout="ghs_fake123\n"))
+        monkeypatch.setenv("GITHUB_TOKEN", "should-not-be-used")
+
+        token, source = resolve_github_token()
+
+        assert token == "ghs_fake123"
+        assert source == "gh CLI"
+
+    def test_falls_back_to_github_token_when_gh_not_installed(self, monkeypatch):
+        monkeypatch.setattr(
+            "radar.main.subprocess.run", _fake_gh_run(raise_exc=FileNotFoundError("gh not found"))
+        )
+        monkeypatch.setenv("GITHUB_TOKEN", "from-env")
+        monkeypatch.delenv("GH_PAT", raising=False)
+
+        token, source = resolve_github_token()
+
+        assert token == "from-env"
+        assert source == "GITHUB_TOKEN env var"
+
+    def test_falls_back_to_gh_pat_when_github_token_missing(self, monkeypatch):
+        monkeypatch.setattr(
+            "radar.main.subprocess.run", _fake_gh_run(raise_exc=FileNotFoundError("gh not found"))
+        )
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("GH_PAT", "from-gh-pat")
+
+        token, source = resolve_github_token()
+
+        assert token == "from-gh-pat"
+        assert source == "GH_PAT env var"
+
+    def test_falls_back_when_gh_cli_not_logged_in(self, monkeypatch):
+        # gh installed but `gh auth token` fails (not logged in) -> non-zero exit.
+        monkeypatch.setattr("radar.main.subprocess.run", _fake_gh_run(returncode=1, stdout=""))
+        monkeypatch.setenv("GITHUB_TOKEN", "from-env")
+
+        token, source = resolve_github_token()
+
+        assert token == "from-env"
+        assert source == "GITHUB_TOKEN env var"
+
+    def test_falls_back_when_gh_cli_returns_empty_output(self, monkeypatch):
+        monkeypatch.setattr("radar.main.subprocess.run", _fake_gh_run(returncode=0, stdout="   \n"))
+        monkeypatch.setenv("GITHUB_TOKEN", "from-env")
+
+        token, source = resolve_github_token()
+
+        assert token == "from-env"
+
+    def test_returns_none_when_nothing_available(self, monkeypatch):
+        monkeypatch.setattr(
+            "radar.main.subprocess.run", _fake_gh_run(raise_exc=FileNotFoundError("gh not found"))
+        )
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_PAT", raising=False)
+
+        token, source = resolve_github_token()
+
+        assert token is None
+        assert source is None
+
+    def test_never_prints_the_token_value(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "radar.main.subprocess.run", _fake_gh_run(returncode=0, stdout="super-secret-token\n")
+        )
+
+        token, _ = resolve_github_token()
+
+        assert token == "super-secret-token"
+        captured = capsys.readouterr()
+        assert "super-secret-token" not in captured.out
+        assert "super-secret-token" not in captured.err
 
 
 class TestLoadDotenv:

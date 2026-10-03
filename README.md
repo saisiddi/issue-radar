@@ -2,7 +2,21 @@
 
 GitHub issue alert and triage tool. Alerts only - never comments, assigns, labels, or opens PRs on any watched repo.
 
-Full setup docs land with the GitHub Actions workflow (step 6). This section is here early because it's needed now.
+Full setup docs land with the GitHub Actions workflow (step 6). These sections are here early because they're needed now.
+
+## GitHub authentication
+
+The tool resolves a GitHub token in this order:
+
+1. `gh auth token` - if the [GitHub CLI](https://cli.github.com/) is installed and you're logged in (`gh auth login`), this is used automatically. Nothing to configure.
+2. `GITHUB_TOKEN` environment variable (or in a local `.env` file, gitignored - see `.env.example`).
+3. `GH_PAT` environment variable, same way.
+
+If none are available, requests run unauthenticated (60/hour - not enough for most of these repos' issue counts).
+
+The token is never printed or logged; only its source (e.g. "gh CLI") is.
+
+This tool only ever makes read-only GitHub API calls (listing issues, comments, and timelines) - it never comments, assigns, labels, or opens PRs, regardless of which token source is used.
 
 ## Adding a new repo
 

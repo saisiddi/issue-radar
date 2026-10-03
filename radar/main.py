@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,6 +37,33 @@ def load_dotenv(path: Path = DEFAULT_DOTENV_PATH) -> None:
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _token_from_gh_cli() -> str | None:
+    try:
+        result = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None  # gh not installed, or failed to launch
+    if result.returncode != 0:
+        return None  # gh installed but not logged in (or other gh error)
+    token = result.stdout.strip()
+    return token or None
+
+
+def resolve_github_token() -> tuple[str | None, str | None]:
+    """Resolve a GitHub token, preferring `gh auth token` over env vars.
+
+    Returns (token, source_label). source_label is safe to log; the token
+    itself never is.
+    """
+    gh_token = _token_from_gh_cli()
+    if gh_token:
+        return gh_token, "gh CLI"
+    if os.environ.get("GITHUB_TOKEN"):
+        return os.environ["GITHUB_TOKEN"], "GITHUB_TOKEN env var"
+    if os.environ.get("GH_PAT"):
+        return os.environ["GH_PAT"], "GH_PAT env var"
+    return None, None
 
 
 def _summary_reason(result: dict) -> str:
@@ -198,9 +226,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_PAT")
-    if not token:
-        print("warning: no GITHUB_TOKEN or GH_PAT set; unauthenticated requests have a low rate limit", file=sys.stderr)
+    token, token_source = resolve_github_token()
+    if token:
+        print(f"using GitHub token from {token_source}", file=sys.stderr)
+    else:
+        print(
+            "warning: no GitHub token available (gh CLI, GITHUB_TOKEN, GH_PAT); "
+            "unauthenticated requests have a low rate limit",
+            file=sys.stderr,
+        )
 
     config = load_config(args.config)
     dry_run = args.dry_run or config.notifier.dry_run
