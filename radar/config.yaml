@@ -95,3 +95,9 @@ limits:
   # Sweep mode calls comments+timeline per open issue, so for a repo with
   # hundreds of open issues this adds up fast - set it there if needed.
   max_api_calls_per_run: null
+
+poll:
+  # A repo's first-ever poll has no last_seen. Without this, it would fetch
+  # every historical open issue and flood you - that's sweep's job. Instead
+  # the first run only looks back this many days.
+  first_run_window_days: 3

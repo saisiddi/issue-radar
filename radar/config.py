@@ -35,6 +35,14 @@ class LimitsConfig:
 
 
 @dataclass
+class PollConfig:
+    # On a repo's very first poll (empty state), only look back this many
+    # days instead of fetching every historical open issue - that's sweep's
+    # job, not poll's.
+    first_run_window_days: int = 3
+
+
+@dataclass
 class Config:
     repos: list[RepoConfig]
     positive_keywords: list[str]
@@ -45,6 +53,7 @@ class Config:
     notifier: NotifierConfig
     llm: LLMConfig
     limits: LimitsConfig
+    poll: PollConfig
     state_file: str
     sweep_report_file: str
 
@@ -58,6 +67,7 @@ def load_config(path: str | Path) -> Config:
     notifier_raw = raw.get("notifier", {})
     llm_raw = raw.get("llm", {})
     limits_raw = raw.get("limits", {})
+    poll_raw = raw.get("poll", {})
 
     return Config(
         repos=repos,
@@ -69,6 +79,7 @@ def load_config(path: str | Path) -> Config:
         notifier=NotifierConfig(**notifier_raw),
         llm=LLMConfig(**llm_raw),
         limits=LimitsConfig(**limits_raw),
+        poll=PollConfig(**poll_raw),
         state_file=raw.get("state_file", "state.json"),
         sweep_report_file=raw.get("sweep_report_file", "sweep_report.md"),
     )

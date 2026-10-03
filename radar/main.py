@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from radar.config import Config, load_config
@@ -17,7 +18,37 @@ from radar.state import load_state, save_state
 from radar.triage import triage_issue
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
+DEFAULT_DOTENV_PATH = Path(__file__).parent.parent / ".env"
 ALERTABLE_STATUSES = {"OPEN-FREE", "CONTESTED", "UNSURE", "DISCUSS-ONLY"}
+GITHUB_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def load_dotenv(path: Path = DEFAULT_DOTENV_PATH) -> None:
+    """Load KEY=VALUE pairs from .env into the environment. Never logs values.
+
+    Real environment variables already set take precedence (setdefault).
+    """
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _summary_reason(result: dict) -> str:
+    if result["status"] == "UNSURE":
+        return "; ".join(result.get("linked_pr_notes") or []) or "uncertain signal, check manually"
+    if result["status"] == "CONTESTED":
+        return f"{result['claim_comments']} claim comments, unassigned"
+    if result["status"] == "DISCUSS-ONLY":
+        return f"reserved label: {', '.join(result.get('reserved_labels') or [])}"
+    abandoned = [n for n in (result.get("linked_pr_notes") or []) if "closed unmerged" in n]
+    if abandoned:
+        return "; ".join(abandoned)
+    return f"fit {result['fit_tag']} (matched: {', '.join(result.get('matched_keywords') or []) or 'none'})"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,7 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_poll(config: Config, state_path: str, dry_run: bool, token: str | None) -> int:
+def run_poll(
+    config: Config, state_path: str, dry_run: bool, token: str | None, now: datetime | None = None
+) -> int:
+    now = now or datetime.now(timezone.utc)
+    now_str = now.strftime(GITHUB_TIMESTAMP_FORMAT)
+
     state = load_state(state_path)
     try:
         notifier = get_notifier(config.notifier.type, dry_run)
@@ -51,10 +87,17 @@ def run_poll(config: Config, state_path: str, dry_run: bool, token: str | None) 
     )
 
     had_error = False
+    summary_rows: list[tuple[str, int, str, str, str, str]] = []
+
     for repo_cfg in config.repos:
         repo_state = state.for_repo(repo_cfg.name)
+        is_first_run = repo_state.last_seen is None
+        since = repo_state.last_seen or (
+            now - timedelta(days=config.poll.first_run_window_days)
+        ).strftime(GITHUB_TIMESTAMP_FORMAT)
+
         try:
-            issues = list(client.list_issues(repo_cfg.name, since=repo_state.last_seen, state="open"))
+            issues = list(client.list_issues(repo_cfg.name, since=since, state="open"))
         except (BackoffBudgetExceeded, RequestBudgetExceeded) as e:
             print(f"warning: run budget exceeded, stopping before {repo_cfg.name}: {e}", file=sys.stderr)
             had_error = True
@@ -64,7 +107,10 @@ def run_poll(config: Config, state_path: str, dry_run: bool, token: str | None) 
             had_error = True
             continue
 
-        latest_seen = repo_state.last_seen
+        # On a repo's first-ever poll, advance straight to "now" regardless
+        # of what was fetched, so the next poll starts from here forward
+        # rather than re-scanning the bootstrap window every 30 minutes.
+        latest_seen = now_str if is_first_run else repo_state.last_seen
         budget_exhausted = False
 
         for issue in issues:
@@ -115,12 +161,24 @@ def run_poll(config: Config, state_path: str, dry_run: bool, token: str | None) 
                 continue
 
             repo_state.alerted_issue_numbers.append(number)
+            summary_rows.append(
+                (repo_cfg.name, number, issue.get("title") or "", result["status"], result["fit_tag"], _summary_reason(result))
+            )
 
         repo_state.last_seen = latest_seen
         save_state(state, state_path)  # persist progressively so a crash doesn't lose earlier repos' progress
 
         if budget_exhausted:
             break
+
+    if dry_run and summary_rows:
+        print()
+        print(f"{'repo':<45} {'#':>6} {'status':<12} {'fit':<7} title / reason")
+        for repo, number, title, status, fit_tag, reason in summary_rows:
+            print(f"{repo:<45} {number:>6} {status:<12} {fit_tag:<7} {title}")
+            print(f"{'':<45} {'':>6} {'':<12} {'':<7} -> {reason}")
+
+    print(f"\nAPI requests used this run: {client.request_count}", file=sys.stderr)
 
     return 1 if had_error else 0
 
@@ -130,6 +188,8 @@ def run_sweep(config, dry_run: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
+
     parser = build_parser()
     args = parser.parse_args(argv)
 

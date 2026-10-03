@@ -40,3 +40,8 @@ def test_load_config_limits():
     config = load_config(CONFIG_PATH)
     assert config.limits.max_total_backoff_seconds == 300
     assert config.limits.max_api_calls_per_run is None
+
+
+def test_load_config_poll_bootstrap_window():
+    config = load_config(CONFIG_PATH)
+    assert config.poll.first_run_window_days == 3
