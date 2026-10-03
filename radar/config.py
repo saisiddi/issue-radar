@@ -29,6 +29,12 @@ class LLMConfig:
 
 
 @dataclass
+class LimitsConfig:
+    max_total_backoff_seconds: float = 300.0
+    max_api_calls_per_run: int | None = None
+
+
+@dataclass
 class Config:
     repos: list[RepoConfig]
     positive_keywords: list[str]
@@ -38,6 +44,7 @@ class Config:
     staleness_days_threshold: int
     notifier: NotifierConfig
     llm: LLMConfig
+    limits: LimitsConfig
     state_file: str
     sweep_report_file: str
 
@@ -50,6 +57,7 @@ def load_config(path: str | Path) -> Config:
     skills = raw.get("skills", {})
     notifier_raw = raw.get("notifier", {})
     llm_raw = raw.get("llm", {})
+    limits_raw = raw.get("limits", {})
 
     return Config(
         repos=repos,
@@ -60,6 +68,7 @@ def load_config(path: str | Path) -> Config:
         staleness_days_threshold=raw.get("staleness_days_threshold", 30),
         notifier=NotifierConfig(**notifier_raw),
         llm=LLMConfig(**llm_raw),
+        limits=LimitsConfig(**limits_raw),
         state_file=raw.get("state_file", "state.json"),
         sweep_report_file=raw.get("sweep_report_file", "sweep_report.md"),
     )

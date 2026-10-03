@@ -86,3 +86,12 @@ llm:
 
 state_file: state.json
 sweep_report_file: sweep_report.md
+
+limits:
+  # Cumulative rate-limit sleep per run; after this, stop and skip the
+  # remaining repos rather than burn the whole Actions job waiting.
+  max_total_backoff_seconds: 300
+  # Cap on total GitHub API calls for a single poll/sweep run. null = no cap.
+  # Sweep mode calls comments+timeline per open issue, so for a repo with
+  # hundreds of open issues this adds up fast - set it there if needed.
+  max_api_calls_per_run: null

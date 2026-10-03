@@ -34,3 +34,9 @@ def test_load_config_defaults():
     config = load_config(CONFIG_PATH)
     assert config.notifier.type == "telegram"
     assert config.llm.enabled is False
+
+
+def test_load_config_limits():
+    config = load_config(CONFIG_PATH)
+    assert config.limits.max_total_backoff_seconds == 300
+    assert config.limits.max_api_calls_per_run is None
