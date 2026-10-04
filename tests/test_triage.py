@@ -727,7 +727,9 @@ class TestComputeStatus:
         )
         assert status == "COMMENT-CLAIMED"
 
-    def test_comment_claimed_takes_priority_over_author_claimed(self):
+    def test_author_claimed_takes_priority_over_comment_claimed(self):
+        # The author directly committing to the fix is a stronger, more
+        # specific signal than one ambiguous comment from someone else.
         linked = LinkedPRResult(has_linked_pr=False, unsure=False)
         status = compute_status(
             assigned=False,
@@ -737,7 +739,7 @@ class TestComputeStatus:
             author_claimed=True,
             comment_claimed=True,
         )
-        assert status == "COMMENT-CLAIMED"
+        assert status == "AUTHOR-CLAIMED"
 
     def test_claimed_takes_priority_over_comment_claimed(self):
         linked = LinkedPRResult(has_linked_pr=False, unsure=False)

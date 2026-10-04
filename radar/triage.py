@@ -313,10 +313,13 @@ def compute_status(
         return "CONTESTED"
     if assigned:
         return "CLAIMED"
-    if comment_claimed:
-        return "COMMENT-CLAIMED"
+    # The author directly committing to the fix (often right in the body)
+    # is a stronger, more specific signal than one ambiguous comment from
+    # someone else, so it outranks COMMENT-CLAIMED.
     if author_claimed:
         return "AUTHOR-CLAIMED"
+    if comment_claimed:
+        return "COMMENT-CLAIMED"
     return "OPEN-FREE"
 
 
