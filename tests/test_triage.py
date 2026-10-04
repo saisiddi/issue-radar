@@ -272,6 +272,31 @@ class TestCommentMentionedPRs:
         result = analyze_linked_prs(timeline, REPO, 42)
         assert result.has_linked_pr is True
 
+    def test_same_pr_via_native_timeline_and_comment_mention_is_not_duplicated(self):
+        # Real Nettacker #1167 shape: PR #1169 both naturally cross-
+        # references the issue (its own body likely said "fixes #1167")
+        # AND gets mentioned again in a comment ("I submitted a fix in
+        # PR #1169"). Before deduplication this produced two identical
+        # "previous attempt #1169 closed unmerged" notes.
+        timeline = [
+            cross_ref(1169, body="Fixes #42", state="closed", merged_at=None),
+            comment_mention_event(1169, state="closed", merged_at=None),
+        ]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.notes.count("previous attempt #1169 closed unmerged") == 1
+
+    def test_dedup_prefers_comment_source_when_either_occurrence_is_a_comment(self):
+        # Same PR appears once via timeline (ambiguous mention, no closing
+        # keyword) and once via a resolved comment mention - the comment
+        # mention is stronger evidence and should win, producing HAS-PR.
+        timeline = [
+            cross_ref(1259, body="related to #42", state="open"),  # ambiguous on its own
+            comment_mention_event(1259, state="open"),
+        ]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.has_linked_pr is True
+        assert result.unsure is False
+
 
 class TestLikelyAlreadyFixed:
     def test_true_when_same_repo_merged_pr_exists_even_if_unsure(self):
@@ -567,6 +592,17 @@ class TestAuthorSelfClaim:
         for body, phrase in cases:
             issue = {"title": "x", "body": body}
             assert author_self_claim(issue, [], [phrase]) is not None, body
+
+    def test_nettacker_597_comment_exact_sentence_is_a_claim(self):
+        # Real Nettacker #597: a non-author comment "I want to take up
+        # this issue too." - missed before "i want to take" was added.
+        comments = [{"body": "I want to take up this issue too."}]
+        assert count_claim_comments(comments, ["i want to take"]) == 1
+
+    def test_nettacker_597_matches_against_real_config_claim_phrases(self):
+        config = load_config(Path(__file__).parent.parent / "radar" / "config.yaml")
+        comments = [{"body": "I want to take up this issue too."}]
+        assert count_claim_comments(comments, config.claim_phrases) == 1
 
     def test_proposal_title_prefix_alone_is_sufficient(self):
         issue = {"title": "Proposal: Add KEV module for CVE-2026-1234", "body": "Some description."}

@@ -87,7 +87,7 @@ def _extract_pr_references(timeline: list[dict], issue_repo: str, issue_number: 
     by falling back to UNSURE rather than ever claiming "free" on weak
     evidence - see analyze_linked_prs.
     """
-    refs = []
+    refs_by_key: dict[tuple[str, int | None], PRReference] = {}
     for event in timeline:
         if event.get("event") != "cross-referenced":
             continue
@@ -98,23 +98,36 @@ def _extract_pr_references(timeline: list[dict], issue_repo: str, issue_number: 
             continue  # a plain issue mentioned this one, not a PR
 
         repo_full_name = (src_issue.get("repository") or {}).get("full_name") or ""
+        number = src_issue.get("number")
         # GreedyBear's required PR title format is "<feature>. Closes #999" -
         # the keyword often lives in the title, not the body, so check both.
         closing_text = f"{src_issue.get('title') or ''}\n{src_issue.get('body') or ''}"
-        refs.append(
-            PRReference(
-                number=src_issue.get("number"),
-                url=src_issue.get("html_url") or pr_info.get("html_url") or "",
-                repo=repo_full_name or "unknown",
-                author=(src_issue.get("user") or {}).get("login"),
-                merged=bool(pr_info.get("merged_at")),
-                open=src_issue.get("state") == "open",
-                same_repo=repo_full_name.lower() == issue_repo.lower(),
-                closes_this_issue=issue_number in _closing_keyword_targets(closing_text),
-                source="comment" if event.get("_mention_source") == "comment" else "timeline",
+        is_comment_mention = event.get("_mention_source") == "comment"
+
+        key = (repo_full_name.lower(), number)
+        if key in refs_by_key:
+            # Same PR surfaced twice (e.g. a native timeline cross-reference
+            # AND a comment mentioning it) - merge rather than duplicate.
+            existing = refs_by_key[key]
+            existing.closes_this_issue = existing.closes_this_issue or (
+                issue_number in _closing_keyword_targets(closing_text)
             )
+            if is_comment_mention:
+                existing.source = "comment"
+            continue
+
+        refs_by_key[key] = PRReference(
+            number=number,
+            url=src_issue.get("html_url") or pr_info.get("html_url") or "",
+            repo=repo_full_name or "unknown",
+            author=(src_issue.get("user") or {}).get("login"),
+            merged=bool(pr_info.get("merged_at")),
+            open=src_issue.get("state") == "open",
+            same_repo=repo_full_name.lower() == issue_repo.lower(),
+            closes_this_issue=issue_number in _closing_keyword_targets(closing_text),
+            source="comment" if is_comment_mention else "timeline",
         )
-    return refs
+    return list(refs_by_key.values())
 
 
 def analyze_linked_prs(
