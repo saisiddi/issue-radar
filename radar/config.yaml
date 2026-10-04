@@ -2,6 +2,10 @@
 # This tool only reads issues and sends alerts. It never comments, assigns,
 # labels, or opens PRs on any watched repo.
 
+# Your own GitHub login. Issues you authored are never alerted on in poll,
+# and are listed under a separate "My issues" section in sweep reports.
+my_username: saisiddi
+
 # Each repo below can optionally override the global positive_keywords,
 # negative_keywords, claim_phrases, and reserved_labels (set further down)
 # by adding the same field directly on the repo entry - see "Adding a new
@@ -82,6 +86,8 @@ claim_phrases:
   - "assign this"
   - "i have prepared a patch"
   - "i have a version ready"
+  - "could this be assigned to me"
+  - "can this be assigned to me"
 
 # Labels that mark an issue as reserved for an active program (e.g. GSoC) and
 # therefore DISCUSS-ONLY rather than something to alert on as free to claim.

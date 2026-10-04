@@ -84,6 +84,18 @@ def test_load_config_sweep_very_old_threshold():
     assert config.sweep.very_old_days_threshold == 180
 
 
+def test_load_config_my_username():
+    config = load_config(CONFIG_PATH)
+    assert config.my_username == "saisiddi"
+
+
+def test_load_config_my_username_defaults_to_none(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(MINIMAL_CONFIG_WITH_OVERRIDE)
+    config = load_config(path)
+    assert config.my_username is None
+
+
 class TestPerRepoOverrides:
     def test_repo_without_overrides_has_none_fields(self, tmp_path):
         path = tmp_path / "config.yaml"

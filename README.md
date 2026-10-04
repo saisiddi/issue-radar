@@ -59,7 +59,7 @@ Both commands take `--config path/to/config.yaml` if you don't want the default 
 The workflow at [.github/workflows/radar.yml](.github/workflows/radar.yml) runs `poll` every 30 minutes and on manual dispatch, then commits the updated `state.json` back to the repo so dedupe state persists between runs.
 
 Two things to know about GitHub's scheduler:
-- **Cron can be delayed.** GitHub doesn't guarantee the `*/30 * * * *` schedule fires exactly on time, especially under load - treat "every 30 minutes" as "roughly every 30 minutes."
+- **Cron can be delayed, sometimes by hours.** GitHub doesn't guarantee the `*/30 * * * *` schedule fires on time, and under high load a queued scheduled run can be dropped entirely rather than just delayed. Confirmed on this repo's own first day: the workflow registered at 14:45 UTC, and the first scheduled firing didn't happen until 18:19 UTC - over 3 hours later, not ~30 minutes. `:00` and `:30` past the hour (what `*/30 * * * *` uses) are also GitHub's own documented *worst* minutes to pick, since that's when load from every other repo's cron jobs peaks; an off-beat minute (e.g. `7,37 * * * *`) would likely see fewer delays. Not changed here without asking first.
 - **Scheduled workflows on public repos are auto-disabled after 60 days with no repository activity.** The workflow's own `state.json` commits count as activity, so as long as it's actually finding issues to alert on (or at least advancing `last_seen`), it keeps itself alive. If a repo's been quiet long enough that even that stops, re-enable it from the repo's Actions tab.
 
 This repo is **not** pushed anywhere and has no secrets configured yet - none of that is done automatically. When you're ready, here's exactly what to run (adjust the username/repo name and secret values):
@@ -97,6 +97,12 @@ After secrets are set, trigger a manual run to confirm everything's wired up bef
 ```bash
 gh workflow run radar.yml
 ```
+
+## Your own issues
+
+Set `my_username` in `radar/config.yaml` to your GitHub login. Any issue you authored yourself is then:
+- never alerted on in poll, regardless of what status it would otherwise get, and
+- listed under a separate "My issues" section in sweep reports instead of the main/old-unanswered tables - this section ignores the usual CLAIMED/HAS-PR filtering, since it's a personal tracking view of everything you've filed, not a "what's free to grab" view.
 
 ## Adding a new repo
 

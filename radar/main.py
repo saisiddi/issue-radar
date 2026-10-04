@@ -74,6 +74,13 @@ def resolve_github_token() -> tuple[str | None, str | None]:
     return None, None
 
 
+def _is_my_issue(issue: dict, my_username: str | None) -> bool:
+    if not my_username:
+        return False
+    author = (issue.get("user") or {}).get("login")
+    return bool(author) and author.lower() == my_username.lower()
+
+
 def _summary_reason(result: dict) -> str:
     if result["status"] == "UNSURE":
         return "; ".join(result.get("linked_pr_notes") or []) or "uncertain signal, check manually"
@@ -202,6 +209,9 @@ def run_poll(
             if number in repo_state.alerted_issue_numbers:
                 continue
 
+            if _is_my_issue(issue, config.my_username):
+                continue  # never alert on issues you authored yourself
+
             try:
                 comments = list(client.list_issue_comments(repo_cfg.name, number))
                 timeline = list(client.list_issue_timeline(repo_cfg.name, number))
@@ -311,7 +321,14 @@ def _sweep_report_path(base_path: str | Path, repo_name: str) -> Path:
     return base.with_name(f"{base.stem}_{safe_repo}{base.suffix}")
 
 
-def _write_sweep_report(repo_name: str, main_rows: list[dict], old_rows: list[dict], path: str | Path) -> None:
+def _write_sweep_report(
+    repo_name: str,
+    main_rows: list[dict],
+    old_rows: list[dict],
+    path: str | Path,
+    my_rows: list[dict] | None = None,
+) -> None:
+    my_rows = my_rows or []
     lines = [
         "# issue-radar sweep report",
         "",
@@ -321,7 +338,7 @@ def _write_sweep_report(repo_name: str, main_rows: list[dict], old_rows: list[di
         "bundles open issues *and* open PRs together, so it reads higher than "
         "the counts below - that's expected, not a bug.",
         "",
-        f"## {repo_name} ({len(main_rows) + len(old_rows)} issues)",
+        f"## {repo_name} ({len(main_rows) + len(old_rows) + len(my_rows)} issues)",
         "",
         _sweep_table_header(),
     ]
@@ -334,6 +351,14 @@ def _write_sweep_report(repo_name: str, main_rows: list[dict], old_rows: list[di
         lines.append("")
         lines.append(_sweep_table_header())
         for row in old_rows:
+            lines.append(_sweep_table_row(row))
+        lines.append("")
+
+    if my_rows:
+        lines.append(f"### My issues ({len(my_rows)} issues)")
+        lines.append("")
+        lines.append(_sweep_table_header())
+        for row in my_rows:
             lines.append(_sweep_table_row(row))
         lines.append("")
 
@@ -368,6 +393,7 @@ def run_sweep(
     for repo_cfg in repos_to_sweep:
         positive_keywords, negative_keywords, claim_phrases, reserved_labels = effective_keywords(repo_cfg, config)
         rows: list[dict] = []
+        my_rows: list[dict] = []
 
         try:
             issues = list(client.list_issues(repo_cfg.name, since=None, state="open"))
@@ -413,11 +439,19 @@ def run_sweep(
                 now=now,
             )
 
+            result["html_url"] = issue.get("html_url")
+            result["maintainer_replied"] = maintainer_replied(comments, repo_cfg.reviewers)
+
+            if _is_my_issue(issue, config.my_username):
+                # Your own issues get their own section regardless of
+                # status - this is a personal tracking view, not subject
+                # to the free/claimed logic that governs other people's.
+                my_rows.append(result)
+                continue
+
             if result["status"] not in SWEEP_KEPT_STATUSES:
                 continue  # skip PRs (already excluded by list_issues) and CLAIMED/HAS-PR
 
-            result["html_url"] = issue.get("html_url")
-            result["maintainer_replied"] = maintainer_replied(comments, repo_cfg.reviewers)
             rows.append(result)
 
         very_old = config.sweep.very_old_days_threshold
@@ -425,12 +459,13 @@ def run_sweep(
         old_rows = [r for r in rows if _is_old_unanswered(r, very_old)]
         main_rows.sort(key=_main_sort_key)
         old_rows.sort(key=_old_unanswered_sort_key)
-        sections[repo_cfg.name] = {"main": main_rows, "old_unanswered": old_rows}
+        my_rows.sort(key=_main_sort_key)
+        sections[repo_cfg.name] = {"main": main_rows, "old_unanswered": old_rows, "my_issues": my_rows}
 
         # Written per-repo (not batched at the end) so sweeping multiple
         # repos in separate calls never overwrites an earlier repo's file.
         report_path = _sweep_report_path(config.sweep_report_file, repo_cfg.name)
-        _write_sweep_report(repo_cfg.name, main_rows, old_rows, report_path)
+        _write_sweep_report(repo_cfg.name, main_rows, old_rows, report_path, my_rows=my_rows)
         print(f"Sweep report for {repo_cfg.name} written to {report_path}", file=sys.stderr)
 
         if budget_exhausted:

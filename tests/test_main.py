@@ -5,14 +5,21 @@ from datetime import datetime, timedelta, timezone
 
 from radar.config import Config, LimitsConfig, LLMConfig, NotifierConfig, PollConfig, RepoConfig, SweepConfig
 from radar.github_client import BackoffBudgetExceeded, GitHubAPIError
-from radar.main import GITHUB_TIMESTAMP_FORMAT, _sweep_report_path, resolve_github_token, run_poll, run_sweep
+from radar.main import (
+    GITHUB_TIMESTAMP_FORMAT,
+    _is_my_issue,
+    _sweep_report_path,
+    resolve_github_token,
+    run_poll,
+    run_sweep,
+)
 from radar.state import load_state
 
 NOW = datetime(2026, 2, 1, tzinfo=timezone.utc)
 NOW_STR = NOW.strftime(GITHUB_TIMESTAMP_FORMAT)
 
 
-def make_config(repos, notifier_type="telegram", first_run_window_days=3):
+def make_config(repos, notifier_type="telegram", first_run_window_days=3, my_username=None):
     return Config(
         repos=repos,
         positive_keywords=["python", "security"],
@@ -27,10 +34,11 @@ def make_config(repos, notifier_type="telegram", first_run_window_days=3):
         sweep=SweepConfig(),
         state_file="state.json",
         sweep_report_file="sweep_report.md",
+        my_username=my_username,
     )
 
 
-def make_issue(number, assignees=None, labels=None, updated_at="2026-01-01T00:00:00Z"):
+def make_issue(number, assignees=None, labels=None, updated_at="2026-01-01T00:00:00Z", author="someone"):
     return {
         "number": number,
         "title": f"Issue {number}: python security bug",
@@ -40,7 +48,7 @@ def make_issue(number, assignees=None, labels=None, updated_at="2026-01-01T00:00
         "updated_at": updated_at,
         "created_at": updated_at,
         "html_url": f"https://github.com/owner/repo/issues/{number}",
-        "user": {"login": "someone"},
+        "user": {"login": author},
     }
 
 
@@ -320,6 +328,142 @@ class TestRunStartTimeNotEndTime:
 
         repo_state = load_state(state_path).for_repo("owner/repo")
         assert repo_state.last_seen == issue_updated_after_start
+
+
+class TestIsMyIssue:
+    def test_true_when_author_matches(self):
+        issue = {"user": {"login": "saisiddi"}}
+        assert _is_my_issue(issue, "saisiddi") is True
+
+    def test_case_insensitive(self):
+        issue = {"user": {"login": "SaiSiddi"}}
+        assert _is_my_issue(issue, "saisiddi") is True
+
+    def test_false_when_author_differs(self):
+        issue = {"user": {"login": "someone-else"}}
+        assert _is_my_issue(issue, "saisiddi") is False
+
+    def test_false_when_my_username_not_configured(self):
+        issue = {"user": {"login": "saisiddi"}}
+        assert _is_my_issue(issue, None) is False
+
+    def test_false_when_issue_has_no_author(self):
+        issue = {"user": None}
+        assert _is_my_issue(issue, "saisiddi") is False
+
+
+class TestMyIssuesExcludedFromPollAlerts:
+    def test_own_issue_never_alerted_even_if_status_would_be_alertable(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], my_username="saisiddi")
+        issue = make_issue(1, author="saisiddi")
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [issue]})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        assert rc == 0
+        assert capsys.readouterr().out == ""
+        # No detail calls either - skipped before fetching comments/timeline.
+        detail_calls = [c for c in fake_client.calls if c[0] in ("list_issue_comments", "list_issue_timeline")]
+        assert detail_calls == []
+
+    def test_own_issue_still_advances_last_seen(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], my_username="saisiddi")
+        issue = make_issue(1, author="saisiddi", updated_at="2026-01-15T00:00:00Z")
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [issue]})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        # Seed existing state so this isn't a first run (which would advance
+        # straight to "now" regardless - see TestFirstRunBootstrap).
+        state_path.write_text(
+            json.dumps({"owner/repo": {"last_seen": "2026-01-01T00:00:00Z", "alerted_issue_numbers": []}})
+        )
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        repo_state = load_state(state_path).for_repo("owner/repo")
+        assert repo_state.last_seen == "2026-01-15T00:00:00Z"
+
+    def test_other_authors_issue_still_alerted(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], my_username="saisiddi")
+        issue = make_issue(1, author="someone-else")
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [issue]})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "#1" in out
+
+    def test_no_my_username_configured_alerts_normally(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], my_username=None)
+        issue = make_issue(1, author="saisiddi")
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [issue]})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "#1" in out
+
+
+class TestMyIssuesSweepSection:
+    def test_own_issue_goes_to_my_issues_section_not_main(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], my_username="saisiddi")
+        mine = make_issue(1, author="saisiddi")
+        others = make_issue(2, author="someone-else")
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [mine, others]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
+        main_section, _, rest = content.partition("### My issues")
+        assert "#2" in main_section
+        assert "#1" not in main_section
+        assert "#1" in rest
+
+    def test_own_issue_included_even_with_claimed_status(self, monkeypatch, tmp_path):
+        # My issues are a personal tracking view, independent of the
+        # free/claimed filtering applied to everyone else's.
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], my_username="saisiddi")
+        mine_claimed = make_issue(1, author="saisiddi", assignees=[{"login": "someone"}])
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [mine_claimed]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
+        assert "### My issues" in content
+        assert "#1" in content
+        assert "CLAIMED" in content
+
+    def test_no_my_issues_section_when_nothing_self_authored(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], my_username="saisiddi")
+        issue = make_issue(1, author="someone-else")
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [issue]})
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
+        assert "### My issues" not in content
 
 
 class TestCommentClaimedStatus:

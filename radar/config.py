@@ -71,6 +71,10 @@ class Config:
     sweep: SweepConfig
     state_file: str
     sweep_report_file: str
+    # Your own GitHub login. Issues you authored are never alerted on in
+    # poll, and are listed under a separate "My issues" section in sweep
+    # reports instead of the main/old-unanswered tables.
+    my_username: str | None = None
 
 
 REPO_OVERRIDE_KEYWORD_LIST_FIELDS = ("positive_keywords", "negative_keywords", "claim_phrases", "reserved_labels")
@@ -109,6 +113,7 @@ def load_config(path: str | Path) -> Config:
         sweep=SweepConfig(**sweep_raw),
         state_file=raw.get("state_file", "state.json"),
         sweep_report_file=raw.get("sweep_report_file", "sweep_report.md"),
+        my_username=raw.get("my_username"),
     )
 
 

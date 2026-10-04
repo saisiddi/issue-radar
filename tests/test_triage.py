@@ -633,6 +633,39 @@ class TestAuthorSelfClaim:
         issue = {"title": "Our proposal process needs docs", "body": ""}
         assert author_self_claim(issue, [], []) is None
 
+    def test_could_this_be_assigned_to_me_phrase(self):
+        issue = {"title": "x", "body": "Could this be assigned to me?"}
+        reason = author_self_claim(issue, [], ["could this be assigned to me"])
+        assert reason is not None
+
+    def test_can_this_be_assigned_to_me_phrase(self):
+        issue = {"title": "x", "body": "Can this be assigned to me please?"}
+        reason = author_self_claim(issue, [], ["can this be assigned to me"])
+        assert reason is not None
+
+    def test_nettacker_1764_exact_sentence(self):
+        # Real Nettacker #1764 body: "Could this be assigned to me? I'll
+        # follow the existing KEV module schema..." - missed before this
+        # phrase was added.
+        issue = {
+            "title": "Add KEV module for CVE-2023-49105 (ownCloud WebDAV Pre-Signed URL Authentication Bypass)",
+            "body": (
+                "Could this be assigned to me? I'll follow the existing KEV module "
+                "schema (severity, cisa_kev profile tag), sign commits, and run "
+                "make pre-commit/make test."
+            ),
+        }
+        reason = author_self_claim(issue, [], ["could this be assigned to me"])
+        assert reason is not None
+
+    def test_nettacker_1764_matches_against_real_config_claim_phrases(self):
+        config = load_config(Path(__file__).parent.parent / "radar" / "config.yaml")
+        issue = {
+            "title": "x",
+            "body": "Could this be assigned to me? I'll follow the existing KEV module schema.",
+        }
+        assert author_self_claim(issue, [], config.claim_phrases) is not None
+
     def test_nettacker_1758_exact_sentence(self):
         issue = {
             "title": "docs: fix outdated tcp_connect_port_scan references in Usage.md",
