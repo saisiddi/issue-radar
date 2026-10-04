@@ -70,6 +70,17 @@ claim_phrases:
   - "happy to work on"
   - "please assign"
   - "may i work"
+  - "i can make"
+  - "submit a pr"
+  - "i can submit"
+  - "i can open a pr"
+  - "i'll submit"
+  - "i'd be happy to"
+  - "i would like to be assigned"
+  - "could you assign"
+  - "assign this"
+  - "i have prepared a patch"
+  - "i have a version ready"
 
 # Labels that mark an issue as reserved for an active program (e.g. GSoC) and
 # therefore DISCUSS-ONLY rather than something to alert on as free to claim.

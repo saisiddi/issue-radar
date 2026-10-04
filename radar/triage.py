@@ -126,9 +126,14 @@ def maintainer_replied(comments: list[dict], reviewers: list[str]) -> bool:
     return False
 
 
-def count_claim_comments(comments: list[dict], claim_phrases: list[str]) -> int:
+def count_claim_comments(comments: list[dict], claim_phrases: list[str], exclude_login: str | None = None) -> int:
+    """Count comments that look like claim attempts, excluding the issue's
+    own author (their claims are the author-self-claim signal, not
+    contention between different people - see author_self_claim)."""
     count = 0
     for comment in comments:
+        if exclude_login and (comment.get("user") or {}).get("login") == exclude_login:
+            continue
         body = (comment.get("body") or "").lower()
         if any(phrase in body for phrase in claim_phrases):
             count += 1
@@ -159,13 +164,26 @@ def reserved_hints(issue: dict, reserved_labels: list[str]) -> list[str]:
 AUTHOR_CLAIM_TITLE_PREFIXES = ("proposal:",)
 
 
-def author_self_claim(issue: dict, claim_phrases: list[str]) -> str | None:
-    """None, or a human-readable reason the issue's own body/title suggests
-    its author intends to submit the fix themselves."""
+def author_self_claim(issue: dict, comments: list[dict], claim_phrases: list[str]) -> str | None:
+    """None, or a human-readable reason the issue's own body, the author's
+    own follow-up comments, or its title suggest its author intends to
+    submit the fix themselves. A claim phrase in a comment only counts when
+    the commenter IS the issue's own author - other people's comments are
+    handled separately (see count_claim_comments/CONTESTED)."""
     body = (issue.get("body") or "").lower()
     matched_phrase = next((p for p in claim_phrases if p in body), None)
     if matched_phrase:
         return f'issue body says: "{matched_phrase}"'
+
+    issue_author = (issue.get("user") or {}).get("login")
+    if issue_author:
+        for comment in comments:
+            if (comment.get("user") or {}).get("login") != issue_author:
+                continue
+            comment_body = (comment.get("body") or "").lower()
+            matched_phrase = next((p for p in claim_phrases if p in comment_body), None)
+            if matched_phrase:
+                return f'author comment says: "{matched_phrase}"'
 
     title = (issue.get("title") or "").strip().lower()
     if title.startswith(AUTHOR_CLAIM_TITLE_PREFIXES):
@@ -262,11 +280,11 @@ def triage_issue(
     assigned = bool(issue.get("assignees"))
     issue_author = (issue.get("user") or {}).get("login")
     linked = analyze_linked_prs(timeline, repo_name, issue["number"], issue_author=issue_author)
-    claim_count = count_claim_comments(comments, claim_phrases)
+    claim_count = count_claim_comments(comments, claim_phrases, exclude_login=issue_author)
     contested = claim_count >= 2 and not assigned
     fit_tag, matched_keywords = compute_fit(issue, positive_keywords, negative_keywords)
     reserved_matches = reserved_hints(issue, reserved_labels)
-    author_claim_reason = author_self_claim(issue, claim_phrases)
+    author_claim_reason = author_self_claim(issue, comments, claim_phrases)
     status = compute_status(assigned, linked, contested, bool(reserved_matches), bool(author_claim_reason))
 
     return {

@@ -217,6 +217,31 @@ class TestClaimComments:
     def test_no_comments(self):
         assert count_claim_comments([], ["assign me"]) == 0
 
+    def test_excludes_the_issue_authors_own_comments(self):
+        # The #1747 scenario: the SAME person makes two claim-like
+        # comments about their own issue. That's an author self-claim,
+        # not contention between different people, so it shouldn't count
+        # toward CONTESTED at all.
+        comments = [
+            {"user": {"login": "reporter42"}, "body": "Could you please assign this issue to me?"},
+            {"user": {"login": "reporter42"}, "body": "I have a version ready whenever you want it."},
+        ]
+        count = count_claim_comments(
+            comments, ["could you assign", "i have a version ready"], exclude_login="reporter42"
+        )
+        assert count == 0
+
+    def test_other_peoples_claims_still_counted_when_excluding_author(self):
+        comments = [
+            {"user": {"login": "reporter42"}, "body": "could you assign this to me"},
+            {"user": {"login": "someone-else"}, "body": "i'll take"},
+            {"user": {"login": "a-third-person"}, "body": "i can work on this"},
+        ]
+        count = count_claim_comments(
+            comments, ["could you assign", "i'll take", "i can work on this"], exclude_login="reporter42"
+        )
+        assert count == 2
+
 
 class TestMaintainerReplied:
     def test_true_when_reviewer_commented(self):
@@ -417,18 +442,18 @@ class TestReservedHints:
 class TestAuthorSelfClaim:
     def test_body_phrase_match(self):
         issue = {"title": "Add a feature", "body": "I'd like to work on this myself."}
-        reason = author_self_claim(issue, ["i'd like to work"])
+        reason = author_self_claim(issue, [], ["i'd like to work"])
         assert reason is not None
         assert "i'd like to work" in reason
 
     def test_happy_to_submit_a_pr_phrase(self):
         issue = {"title": "Add a feature", "body": "Happy to submit a PR for this."}
-        reason = author_self_claim(issue, ["happy to submit a pr"])
+        reason = author_self_claim(issue, [], ["happy to submit a pr"])
         assert reason is not None
 
     def test_i_can_implement_this_phrase(self):
         issue = {"title": "Add a feature", "body": "I can implement this if no one else is on it."}
-        reason = author_self_claim(issue, ["i can implement this"])
+        reason = author_self_claim(issue, [], ["i can implement this"])
         assert reason is not None
 
     def test_greedybear_1668_exact_sentence(self):
@@ -438,7 +463,7 @@ class TestAuthorSelfClaim:
             "title": "Over long hostname in an attacker URL drops a whole honeypot's IOCs",
             "body": "Happy to take it if the shape looks right.",
         }
-        reason = author_self_claim(issue, ["happy to take"])
+        reason = author_self_claim(issue, [], ["happy to take"])
         assert reason is not None
         assert "happy to take" in reason
 
@@ -451,21 +476,21 @@ class TestAuthorSelfClaim:
         ]
         for body, phrase in cases:
             issue = {"title": "x", "body": body}
-            assert author_self_claim(issue, [phrase]) is not None, body
+            assert author_self_claim(issue, [], [phrase]) is not None, body
 
     def test_proposal_title_prefix_alone_is_sufficient(self):
         issue = {"title": "Proposal: Add KEV module for CVE-2026-1234", "body": "Some description."}
-        reason = author_self_claim(issue, [])
+        reason = author_self_claim(issue, [], [])
         assert reason is not None
         assert "Proposal" in reason
 
     def test_proposal_prefix_is_case_insensitive(self):
         issue = {"title": "PROPOSAL: do a thing", "body": ""}
-        assert author_self_claim(issue, []) is not None
+        assert author_self_claim(issue, [], []) is not None
 
     def test_no_claim_signal_returns_none(self):
         issue = {"title": "A plain bug report", "body": "It crashes when I run it."}
-        assert author_self_claim(issue, ["i'd like to work"]) is None
+        assert author_self_claim(issue, [], ["i'd like to work"]) is None
 
     def test_greedybear_1668_matches_against_real_config_claim_phrases(self):
         # End-to-end: the actual config.yaml claim_phrases list, not a
@@ -476,11 +501,71 @@ class TestAuthorSelfClaim:
             "title": "Over long hostname in an attacker URL drops a whole honeypot's IOCs",
             "body": "Happy to take it if the shape looks right.",
         }
-        assert author_self_claim(issue, config.claim_phrases) is not None
+        assert author_self_claim(issue, [], config.claim_phrases) is not None
 
     def test_proposal_word_mid_title_does_not_count(self):
         issue = {"title": "Our proposal process needs docs", "body": ""}
-        assert author_self_claim(issue, []) is None
+        assert author_self_claim(issue, [], []) is None
+
+    def test_nettacker_1758_exact_sentence(self):
+        issue = {
+            "title": "docs: fix outdated tcp_connect_port_scan references in Usage.md",
+            "body": "If this looks good, I can make the documentation change and submit a PR.",
+        }
+        reason = author_self_claim(issue, [], ["i can make", "submit a pr"])
+        assert reason is not None
+
+    def test_nettacker_1758_matches_against_real_config_claim_phrases(self):
+        config = load_config(Path(__file__).parent.parent / "radar" / "config.yaml")
+        issue = {
+            "title": "docs: fix outdated tcp_connect_port_scan references in Usage.md",
+            "body": "If this looks good, I can make the documentation change and submit a PR.",
+        }
+        assert author_self_claim(issue, [], config.claim_phrases) is not None
+
+    def test_nettacker_1747_body_exact_sentence(self):
+        issue = {
+            "title": "x",
+            "body": "I would like to be assigned to this issue to prepare a clean PR",
+        }
+        reason = author_self_claim(issue, [], ["i would like to be assigned"])
+        assert reason is not None
+        assert "body" in reason
+
+    def test_nettacker_1747_author_comments_exact_sentences(self):
+        # Body alone doesn't match here - only the author's own follow-up
+        # comments do. Both comments are from the issue's own author.
+        issue = {"title": "x", "body": "unrelated", "user": {"login": "reporter42"}}
+        comments = [
+            {"user": {"login": "reporter42"}, "body": "Could you please assign this issue to me?"},
+            {"user": {"login": "reporter42"}, "body": "I have a version ready whenever you want it."},
+        ]
+        reason = author_self_claim(issue, comments, ["could you assign", "i have a version ready"])
+        assert reason is not None
+        assert "comment" in reason
+
+    def test_nettacker_1747_matches_against_real_config_claim_phrases(self):
+        config = load_config(Path(__file__).parent.parent / "radar" / "config.yaml")
+        issue = {
+            "title": "x",
+            "body": "I would like to be assigned to this issue to prepare a clean PR",
+            "user": {"login": "reporter42"},
+        }
+        comments = [
+            {"user": {"login": "reporter42"}, "body": "Could you please assign this issue to me?"},
+            {"user": {"login": "reporter42"}, "body": "I have a version ready whenever you want it."},
+        ]
+        assert author_self_claim(issue, comments, config.claim_phrases) is not None
+
+    def test_comment_from_someone_other_than_the_author_does_not_count(self):
+        issue = {"title": "x", "body": "", "user": {"login": "reporter42"}}
+        comments = [{"user": {"login": "someone-else"}, "body": "I have a version ready to send over"}]
+        assert author_self_claim(issue, comments, ["i have a version ready"]) is None
+
+    def test_comment_claim_with_no_issue_author_set_does_not_crash(self):
+        issue = {"title": "x", "body": "", "user": None}
+        comments = [{"user": {"login": "someone"}, "body": "i can make this change"}]
+        assert author_self_claim(issue, comments, ["i can make"]) is None
 
 
 class TestDaysSince:
@@ -691,3 +776,54 @@ class TestTriageIssue:
         # hint apply here; reserved/DISCUSS-ONLY must win.
         assert result["status"] == "DISCUSS-ONLY"
         assert result["reserved_hints"] == ["title mentions GSoC"]
+
+    def test_nettacker_1747_full_scenario_is_author_claimed_not_contested(self):
+        # Real Nettacker #1747 shape: body claims a desire to be assigned,
+        # and the SAME author posts two follow-up claim-like comments.
+        # Before excluding the author from count_claim_comments, this
+        # would have wrongly hit CONTESTED (2 "claim" comments, unassigned)
+        # instead of AUTHOR-CLAIMED.
+        issue = {
+            "number": 1747,
+            "title": "test: test_ssl.py and test_socket.py fail under Python 3.12",
+            "body": "I would like to be assigned to this issue to prepare a clean PR",
+            "labels": [],
+            "assignees": [],
+            "user": {"login": "reporter42"},
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        comments = [
+            {"user": {"login": "reporter42"}, "body": "Could you please assign this issue to me?"},
+            {"user": {"login": "reporter42"}, "body": "I have a version ready whenever you want it."},
+        ]
+        config = load_config(Path(__file__).parent.parent / "radar" / "config.yaml")
+        result = triage_issue(
+            issue, comments, [], REPO,
+            positive_keywords=config.positive_keywords,
+            negative_keywords=config.negative_keywords,
+            claim_phrases=config.claim_phrases,
+            reserved_labels=config.reserved_labels,
+        )
+        assert result["status"] == "AUTHOR-CLAIMED"
+        assert result["claim_comments"] == 0
+        assert result["contested"] is False
+
+    def test_nettacker_1758_full_scenario_is_author_claimed(self):
+        issue = {
+            "number": 1758,
+            "title": "docs: fix outdated tcp_connect_port_scan references in Usage.md",
+            "body": "If this looks good, I can make the documentation change and submit a PR.",
+            "labels": [],
+            "assignees": [],
+            "user": {"login": "jyotish6699"},
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        config = load_config(Path(__file__).parent.parent / "radar" / "config.yaml")
+        result = triage_issue(
+            issue, [], [], REPO,
+            positive_keywords=config.positive_keywords,
+            negative_keywords=config.negative_keywords,
+            claim_phrases=config.claim_phrases,
+            reserved_labels=config.reserved_labels,
+        )
+        assert result["status"] == "AUTHOR-CLAIMED"
