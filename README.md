@@ -159,6 +159,15 @@ Columns include "Maintainer replied?" (any comment from one of that repo's confi
 
 **On issue counts**: the tool's "open issues scanned" count excludes pull requests entirely. A repo's `open_issues_count` on GitHub bundles open issues *and* open PRs together (a well-known REST API quirk - confirmed live against OWASP/Nettacker: GitHub shows 255 there, which is 111 actual open issues + 144 open PRs), so it will read higher than what shows up here. That's expected, not a bug.
 
+## Known limitations
+
+Two triage gaps found during real-world testing that are deliberately left unfixed, since closing them properly needs heuristics broad enough to risk false positives elsewhere:
+
+- **Implicit work-in-progress comments.** A comment that states a claim phrase verbatim (e.g. "I'll take this") is caught; one that only implies active work without using any such phrase is not. Real example: OWASP/Nettacker [#1491](https://github.com/OWASP/Nettacker/issues/1491) ("I reproduced this locally... I also verified...") and [#1188](https://github.com/OWASP/Nettacker/issues/1188) ("I have done an analysis... and can see how it utilizes...") both read as active investigation to a human, but match no claim phrase, so both still come out OPEN-FREE.
+- **Maintainer-declined or already-resolved-by-comment issues.** If a maintainer's comment settles an issue as non-actionable ("works as designed", "no plans for this on the roadmap") without closing it, there's no signal for that - it still triages as a normal open issue. Real examples: [#817](https://github.com/OWASP/Nettacker/issues/817) and [#1090](https://github.com/OWASP/Nettacker/issues/1090).
+
+Both were confirmed by reading the actual threads, not inferred from the triage output alone.
+
 ## Project rules
 
 - Never comments, assigns, labels, or opens PRs - on any repo, in any mode, regardless of token source.
