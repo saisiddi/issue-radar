@@ -4,4 +4,4 @@ __pycache__/
 venv/
 .venv/
 .env
-sweep_report.md
+sweep_report*.md
