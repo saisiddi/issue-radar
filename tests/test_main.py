@@ -52,6 +52,8 @@ class FakeGitHubClient:
         raise_on_detail=None,
         timeline_by_issue=None,
         comments_by_issue=None,
+        issue_by_number=None,
+        raise_on_get_issue=None,
         **_ignored,
     ):
         self.issues_by_repo = issues_by_repo or {}
@@ -59,6 +61,8 @@ class FakeGitHubClient:
         self.raise_on_detail = raise_on_detail or {}
         self.timeline_by_issue = timeline_by_issue or {}
         self.comments_by_issue = comments_by_issue or {}
+        self.issue_by_number = issue_by_number or {}
+        self.raise_on_get_issue = raise_on_get_issue or {}
         self.calls = []
         self.request_count = 0
 
@@ -77,6 +81,12 @@ class FakeGitHubClient:
     def list_issue_timeline(self, repo, number):
         self.calls.append(("list_issue_timeline", repo, number))
         return iter(self.timeline_by_issue.get((repo, number), []))
+
+    def get_issue(self, repo, number):
+        self.calls.append(("get_issue", repo, number))
+        if (repo, number) in self.raise_on_get_issue:
+            raise self.raise_on_get_issue[(repo, number)]
+        return self.issue_by_number[(repo, number)]
 
 
 def patch_client(monkeypatch, fake_client):
@@ -310,6 +320,174 @@ class TestRunStartTimeNotEndTime:
 
         repo_state = load_state(state_path).for_repo("owner/repo")
         assert repo_state.last_seen == issue_updated_after_start
+
+
+class TestCommentClaimedStatus:
+    def test_single_non_author_claim_comment_not_alerted_in_poll(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "someone-else"}, "body": "i'll take"}]},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        assert rc == 0
+        assert capsys.readouterr().out == ""  # COMMENT-CLAIMED is not poll-alertable
+
+    def test_comment_claimed_issue_kept_in_sweep_report(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "someone-else"}, "body": "i'll take"}]},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
+        assert "#1" in content
+        assert "COMMENT-CLAIMED" in content
+
+    def test_two_non_author_claims_still_contested_and_not_in_poll(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={
+                ("owner/repo", 1): [
+                    {"user": {"login": "person-a"}, "body": "i'll take"},
+                    {"user": {"login": "person-b"}, "body": "i'll take"},
+                ]
+            },
+        )
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "CONTESTED" in out  # 2+ claims still alerts as CONTESTED, unlike exactly 1
+
+
+class TestCommentMentionedPRs:
+    def test_poll_resolves_mention_and_skips_has_pr_issue(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "x"}, "body": "opened PR #1259 for this"}]},
+            issue_by_number={
+                ("owner/repo", 1259): {
+                    "number": 1259,
+                    "state": "open",
+                    "title": "",
+                    "body": "",
+                    "pull_request": {"url": "...", "html_url": "...", "merged_at": None},
+                }
+            },
+        )
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        assert rc == 0
+        assert capsys.readouterr().out == ""  # HAS-PR is never poll-alertable
+        assert ("get_issue", "owner/repo", 1259) in fake_client.calls
+
+    def test_sweep_shows_has_pr_from_comment_mention_is_excluded(self, monkeypatch, tmp_path):
+        # HAS-PR is excluded from the sweep report too (same as CLAIMED) -
+        # confirm the resolved mention actually drives that exclusion,
+        # rather than the issue just happening to be OPEN-FREE anyway.
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "x"}, "body": "see #1259"}]},
+            issue_by_number={
+                ("owner/repo", 1259): {
+                    "number": 1259,
+                    "state": "open",
+                    "title": "",
+                    "body": "",
+                    "pull_request": {"url": "...", "html_url": "...", "merged_at": None},
+                }
+            },
+        )
+        patch_client(monkeypatch, fake_client)
+
+        report_path = tmp_path / "sweep_report.md"
+        config.sweep_report_file = str(report_path)
+        run_sweep(config, dry_run=False, token="tok", now=NOW)
+
+        content = _sweep_report_path(report_path, "owner/repo").read_text()
+        assert "#1 " not in content and "[#1]" not in content
+
+    def test_unresolvable_mention_is_skipped_not_fatal(self, monkeypatch, tmp_path, capsys):
+        from radar.github_client import GitHubAPIError
+
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "x"}, "body": "see #999999"}]},
+            raise_on_get_issue={("owner/repo", 999999): GitHubAPIError("not found", 404)},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "#1" in out
+        assert "OPEN-FREE" in out  # unresolvable mention didn't block normal triage
+
+    def test_mention_resolving_to_a_plain_issue_not_a_pr_is_ignored(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "x"}, "body": "related to #42"}]},
+            issue_by_number={("owner/repo", 42): {"number": 42, "state": "open", "title": "", "body": ""}},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "OPEN-FREE" in out  # #42 has no pull_request key - not a PR, ignored
+
+    def test_budget_exceeded_during_mention_resolution_propagates(self, monkeypatch, tmp_path):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1)
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "x"}, "body": "see #1259"}]},
+            raise_on_get_issue={("owner/repo", 1259): BackoffBudgetExceeded("budget blown")},
+        )
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        assert rc == 1
 
 
 class TestRunPollErrorHandling:

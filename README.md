@@ -132,19 +132,22 @@ Rules:
 
 ## Statuses
 
-Every triaged issue gets exactly one status. Poll and sweep both alert/keep everything except CLAIMED and HAS-PR - someone's already on those.
+Every triaged issue gets exactly one status. Poll alerts on everything except CLAIMED, HAS-PR, and COMMENT-CLAIMED. Sweep additionally keeps COMMENT-CLAIMED (worth a look during a deliberate backlog read, not worth an interrupt).
 
 | Status | Meaning |
 |---|---|
 | `OPEN-FREE` | No assignee, no linked PR, no other claim signal. |
-| `AUTHOR-CLAIMED` | The reporter appears to intend to do the work themselves - either a claim phrase in the issue body (e.g. "I'd like to work on this", "happy to take", "happy to submit a PR") or a title starting with "Proposal:". Not a hard assignment, just a heads-up not to duplicate effort. |
-| `CONTESTED` | 2+ comments look like claim attempts and nobody's assigned. |
+| `COMMENT-CLAIMED` | Exactly one non-author comment looks like a claim attempt, and nobody's assigned. Not alerted in poll; listed in sweep reports. 2+ such comments is CONTESTED instead. |
+| `AUTHOR-CLAIMED` | The reporter appears to intend to do the work themselves - a claim phrase in the issue body or in one of the reporter's *own* follow-up comments (e.g. "I'd like to be assigned", "I have a version ready", "happy to submit a PR"), or a title starting with "Proposal:". Not a hard assignment, just a heads-up not to duplicate effort. |
+| `CONTESTED` | 2+ comments from people other than the issue's author look like claim attempts and nobody's assigned. |
 | `DISCUSS-ONLY` | A reserved label (`reserved_labels` in config) matched, or the title mentions "GSoC" - treated the same way even without a label, since these repos use that word loosely in titles. Takes priority over AUTHOR-CLAIMED when a title triggers both (e.g. "Proposal: ... - GSoC 2026"). |
 | `UNSURE` | A linked PR exists but the evidence is ambiguous (see below) - never silently called "free" on weak evidence. |
-| `HAS-PR` | An open or merged same-repo PR clearly references fixing this issue (closing keyword in title/body, or the issue's own author opened the PR). |
+| `HAS-PR` | An open or merged same-repo PR clearly references fixing this issue: a closing keyword in its title/body, the issue's own author opened it, or a comment on the issue explicitly names it (e.g. "opened PR #1259", "see #1259", or a pull URL) - the comment case needs no closing keyword, since a human stating it directly is already strong evidence. |
 | `CLAIMED` | GitHub assignee is set. |
 
-`UNSURE` covers: a PR mentions the issue without a closing keyword, a referencing PR lives in another repo/fork, and (a known gap) a PR linked only via GitHub's "Link a pull request" sidebar button with no closing keyword - that action isn't exposed over the REST API we use, so it's invisible here. If this causes noticeable false UNSURE results, GitHub's GraphQL `closedByPullRequestsReferences` field covers it; not implemented yet.
+`UNSURE` covers: a PR mentions the issue without a closing keyword, a referencing PR lives in another repo/fork, and (a known gap) a PR linked only via GitHub's "Link a pull request" sidebar button with no closing keyword *and never mentioned in a comment either* - that action isn't exposed over the REST API we use, so it's invisible here. If this causes noticeable false UNSURE results, GitHub's GraphQL `closedByPullRequestsReferences` field covers it; not implemented yet.
+
+**Comment-mentioned PRs**: GitHub's own cross-reference system only records a backlink on the *mentioned* item's timeline, not on the mentioning issue's own timeline - so a comment like "I opened PR #1259" is otherwise invisible to this tool. To catch it, every comment is scanned for a bare `#N` or a full pull URL, and each candidate number gets fetched (one extra API call per unique mention) to confirm it's actually a PR and get its state. An unresolvable mention (404, deleted, inaccessible) is skipped silently rather than failing the issue.
 
 ## Sweep report
 

@@ -17,6 +17,43 @@ def _closing_keyword_targets(body: str | None) -> set[int]:
     return {int(n) for n in CLOSING_KEYWORD_RE.findall(body)}
 
 
+# A full pull-request URL in a comment, possibly in another repo.
+COMMENT_PR_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
+# A bare "#N" mention in a comment (e.g. "opened PR #1259", "see #1259").
+# Ambiguous on its own - the caller must fetch #N to confirm it's actually a
+# PR (not a plain issue) and get its state; see extract_comment_pr_mentions.
+COMMENT_HASH_MENTION_RE = re.compile(r"#(\d+)\b")
+
+
+def extract_comment_pr_mentions(
+    comments: list[dict], issue_repo: str, issue_number: int
+) -> list[tuple[str, int]]:
+    """Candidate (repo, number) pairs mentioned in comments that MIGHT be
+    PRs - GitHub's own cross-reference system only records a backlink on
+    the MENTIONED item's timeline, not on the mentioning issue's own
+    timeline, so a comment like "I opened PR #1259" or "see #1259" is
+    otherwise invisible to analyze_linked_prs. Deduplicated, in order,
+    excluding a mention of the issue itself."""
+    seen: set[tuple[str, int]] = set()
+    candidates: list[tuple[str, int]] = []
+
+    def _add(repo: str, number: int) -> None:
+        key = (repo.lower(), number)
+        if key == (issue_repo.lower(), issue_number) or key in seen:
+            return
+        seen.add(key)
+        candidates.append((repo, number))
+
+    for comment in comments:
+        body = comment.get("body") or ""
+        for repo, number in COMMENT_PR_URL_RE.findall(body):
+            _add(repo, int(number))
+        for number in COMMENT_HASH_MENTION_RE.findall(body):
+            _add(issue_repo, int(number))
+
+    return candidates
+
+
 @dataclass
 class PRReference:
     number: int | None
@@ -27,6 +64,10 @@ class PRReference:
     open: bool
     same_repo: bool
     closes_this_issue: bool
+    # "timeline" (a cross-referenced event) or "comment" (a comment mention
+    # we resolved ourselves). A comment mention is direct human-stated
+    # evidence, so it counts as HAS-PR without needing a closing keyword.
+    source: str = "timeline"
 
 
 @dataclass
@@ -70,6 +111,7 @@ def _extract_pr_references(timeline: list[dict], issue_repo: str, issue_number: 
                 open=src_issue.get("state") == "open",
                 same_repo=repo_full_name.lower() == issue_repo.lower(),
                 closes_this_issue=issue_number in _closing_keyword_targets(closing_text),
+                source="comment" if event.get("_mention_source") == "comment" else "timeline",
             )
         )
     return refs
@@ -94,6 +136,11 @@ def analyze_linked_prs(
             if ref.closes_this_issue:
                 has_pr = True
                 notes.append(f"PR #{ref.number} ({state_word}) references closing this issue")
+            elif ref.source == "comment":
+                # A comment explicitly naming this PR is direct human-stated
+                # evidence - no closing keyword needed to trust it.
+                has_pr = True
+                notes.append(f"PR #{ref.number} ({state_word}) mentioned in a comment")
             elif ref.open and issue_author and ref.author and ref.author == issue_author:
                 # The issue-and-PR-pair pattern: same person opened both, no
                 # closing keyword needed to trust this is the fix in progress.
@@ -249,7 +296,12 @@ def days_since(timestamp: str | None, now: datetime | None = None) -> int | None
 
 
 def compute_status(
-    assigned: bool, linked: LinkedPRResult, contested: bool, reserved: bool, author_claimed: bool = False
+    assigned: bool,
+    linked: LinkedPRResult,
+    contested: bool,
+    reserved: bool,
+    author_claimed: bool = False,
+    comment_claimed: bool = False,
 ) -> str:
     if linked.unsure:
         return "UNSURE"
@@ -261,6 +313,8 @@ def compute_status(
         return "CONTESTED"
     if assigned:
         return "CLAIMED"
+    if comment_claimed:
+        return "COMMENT-CLAIMED"
     if author_claimed:
         return "AUTHOR-CLAIMED"
     return "OPEN-FREE"
@@ -282,10 +336,13 @@ def triage_issue(
     linked = analyze_linked_prs(timeline, repo_name, issue["number"], issue_author=issue_author)
     claim_count = count_claim_comments(comments, claim_phrases, exclude_login=issue_author)
     contested = claim_count >= 2 and not assigned
+    comment_claimed = claim_count == 1 and not assigned
     fit_tag, matched_keywords = compute_fit(issue, positive_keywords, negative_keywords)
     reserved_matches = reserved_hints(issue, reserved_labels)
     author_claim_reason = author_self_claim(issue, comments, claim_phrases)
-    status = compute_status(assigned, linked, contested, bool(reserved_matches), bool(author_claim_reason))
+    status = compute_status(
+        assigned, linked, contested, bool(reserved_matches), bool(author_claim_reason), comment_claimed
+    )
 
     return {
         "number": issue["number"],
@@ -297,6 +354,7 @@ def triage_issue(
         "linked_pr_notes": linked.notes,
         "claim_comments": claim_count,
         "contested": contested,
+        "comment_claimed": comment_claimed,
         "fit_tag": fit_tag,
         "matched_keywords": matched_keywords,
         "staleness_days": days_since(issue.get("updated_at"), now=now),

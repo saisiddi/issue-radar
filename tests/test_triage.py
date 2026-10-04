@@ -10,6 +10,7 @@ from radar.triage import (
     compute_status,
     count_claim_comments,
     days_since,
+    extract_comment_pr_mentions,
     maintainer_replied,
     matched_reserved_labels,
     reserved_hints,
@@ -45,6 +46,57 @@ def cross_ref(
             "merged_at": merged_at,
         }
     return {"event": "cross-referenced", "source": {"type": "issue", "issue": source_issue}}
+
+
+def comment_mention_event(number, state="open", merged_at=None, repo_full_name=REPO, is_pr=True, author=None):
+    """Synthetic timeline event shaped like what main.py builds after
+    resolving a comment-mentioned PR number via GitHubClient.get_issue()."""
+    event = cross_ref(
+        number, state=state, merged_at=merged_at, repo_full_name=repo_full_name, is_pr=is_pr, author=author
+    )
+    event["_mention_source"] = "comment"
+    return event
+
+
+class TestExtractCommentPrMentions:
+    def test_bare_hash_mention(self):
+        comments = [{"body": "I opened PR #1259 for this."}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == [(REPO, 1259)]
+
+    def test_see_hash_mention(self):
+        comments = [{"body": "see #1259"}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == [(REPO, 1259)]
+
+    def test_full_pull_url_mention(self):
+        comments = [{"body": "Fixed in https://github.com/other/repo/pull/99"}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == [("other/repo", 99)]
+
+    def test_full_pull_url_in_same_repo(self):
+        comments = [{"body": f"See https://github.com/{REPO}/pull/77"}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == [(REPO, 77)]
+
+    def test_excludes_self_mention(self):
+        comments = [{"body": "duplicate of #42"}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == []
+
+    def test_deduplicates_across_comments(self):
+        comments = [{"body": "see #1259"}, {"body": "already mentioned #1259 above"}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == [(REPO, 1259)]
+
+    def test_multiple_distinct_mentions_in_order(self):
+        comments = [{"body": "see #10 and also #20"}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == [(REPO, 10), (REPO, 20)]
+
+    def test_no_mentions(self):
+        comments = [{"body": "just a regular comment"}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == []
+
+    def test_no_comments(self):
+        assert extract_comment_pr_mentions([], REPO, 42) == []
+
+    def test_missing_body_does_not_crash(self):
+        comments = [{"body": None}, {}]
+        assert extract_comment_pr_mentions(comments, REPO, 42) == []
 
 
 class TestAnalyzeLinkedPRs:
@@ -181,6 +233,44 @@ class TestAnalyzeLinkedPRs:
         result = analyze_linked_prs(timeline, REPO, 42, issue_author=None)
         assert result.has_linked_pr is False
         assert result.unsure is True
+
+
+class TestCommentMentionedPRs:
+    def test_comment_mentioned_open_pr_is_has_pr_without_closing_keyword(self):
+        # No closing keyword in body/title at all - just the fact that it
+        # came from a resolved comment mention is enough.
+        timeline = [comment_mention_event(1259, state="open")]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.has_linked_pr is True
+        assert result.unsure is False
+        assert "mentioned in a comment" in result.notes[0]
+
+    def test_comment_mentioned_merged_pr_is_has_pr(self):
+        timeline = [comment_mention_event(1259, state="closed", merged_at="2026-01-01T00:00:00Z")]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.has_linked_pr is True
+
+    def test_comment_mentioned_closed_unmerged_pr_is_a_note_only(self):
+        timeline = [comment_mention_event(1259, state="closed", merged_at=None)]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.has_linked_pr is False
+        assert result.unsure is False
+        assert "previous attempt #1259 closed unmerged" in result.notes
+
+    def test_comment_mentioned_pr_in_another_repo_is_unsure_not_has_pr(self):
+        timeline = [comment_mention_event(99, state="open", repo_full_name="other/repo")]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.has_linked_pr is False
+        assert result.unsure is True
+        assert "possible work in progress elsewhere" in result.notes[0]
+
+    def test_closing_keyword_from_timeline_and_comment_mention_both_count(self):
+        timeline = [
+            comment_mention_event(1259, state="open"),
+            cross_ref(99, body="Fixes #42", state="closed", merged_at=None),
+        ]
+        result = analyze_linked_prs(timeline, REPO, 42)
+        assert result.has_linked_pr is True
 
 
 class TestLikelyAlreadyFixed:
@@ -630,6 +720,39 @@ class TestComputeStatus:
         )
         assert status == "DISCUSS-ONLY"
 
+    def test_comment_claimed_when_nothing_else_applies(self):
+        linked = LinkedPRResult(has_linked_pr=False, unsure=False)
+        status = compute_status(
+            assigned=False, linked=linked, contested=False, reserved=False, comment_claimed=True
+        )
+        assert status == "COMMENT-CLAIMED"
+
+    def test_comment_claimed_takes_priority_over_author_claimed(self):
+        linked = LinkedPRResult(has_linked_pr=False, unsure=False)
+        status = compute_status(
+            assigned=False,
+            linked=linked,
+            contested=False,
+            reserved=False,
+            author_claimed=True,
+            comment_claimed=True,
+        )
+        assert status == "COMMENT-CLAIMED"
+
+    def test_claimed_takes_priority_over_comment_claimed(self):
+        linked = LinkedPRResult(has_linked_pr=False, unsure=False)
+        status = compute_status(
+            assigned=True, linked=linked, contested=False, reserved=False, comment_claimed=True
+        )
+        assert status == "CLAIMED"
+
+    def test_contested_takes_priority_over_comment_claimed(self):
+        linked = LinkedPRResult(has_linked_pr=False, unsure=False)
+        status = compute_status(
+            assigned=False, linked=linked, contested=True, reserved=False, comment_claimed=True
+        )
+        assert status == "CONTESTED"
+
 
 class TestTriageIssue:
     def test_full_open_free_issue(self):
@@ -827,3 +950,58 @@ class TestTriageIssue:
             reserved_labels=config.reserved_labels,
         )
         assert result["status"] == "AUTHOR-CLAIMED"
+
+    def test_single_non_author_claim_comment_is_comment_claimed_not_open_free(self):
+        issue = {
+            "number": 8,
+            "title": "x",
+            "body": "",
+            "labels": [],
+            "assignees": [],
+            "user": {"login": "reporter"},
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        comments = [{"user": {"login": "someone-else"}, "body": "I'll take this"}]
+        result = triage_issue(
+            issue, comments, [], REPO,
+            positive_keywords=[], negative_keywords=[], claim_phrases=["i'll take"], reserved_labels=[],
+        )
+        assert result["status"] == "COMMENT-CLAIMED"
+        assert result["claim_comments"] == 1
+
+    def test_two_non_author_claim_comments_still_contested(self):
+        issue = {
+            "number": 9,
+            "title": "x",
+            "body": "",
+            "labels": [],
+            "assignees": [],
+            "user": {"login": "reporter"},
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        comments = [
+            {"user": {"login": "person-a"}, "body": "i'll take"},
+            {"user": {"login": "person-b"}, "body": "i'll take"},
+        ]
+        result = triage_issue(
+            issue, comments, [], REPO,
+            positive_keywords=[], negative_keywords=[], claim_phrases=["i'll take"], reserved_labels=[],
+        )
+        assert result["status"] == "CONTESTED"
+
+    def test_comment_mentioning_open_pr_is_has_pr(self):
+        issue = {
+            "number": 10,
+            "title": "x",
+            "body": "",
+            "labels": [],
+            "assignees": [],
+            "user": {"login": "reporter"},
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        timeline = [comment_mention_event(1259, state="open")]
+        result = triage_issue(
+            issue, [], timeline, REPO,
+            positive_keywords=[], negative_keywords=[], claim_phrases=[], reserved_labels=[],
+        )
+        assert result["status"] == "HAS-PR"

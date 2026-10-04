@@ -16,14 +16,19 @@ from radar.github_client import (
 )
 from radar.notify import NotifierConfigError, NotifierError, format_alert, get_notifier
 from radar.state import load_state, save_state
-from radar.triage import maintainer_replied, triage_issue
+from radar.triage import extract_comment_pr_mentions, maintainer_replied, triage_issue
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 DEFAULT_DOTENV_PATH = Path(__file__).parent.parent / ".env"
-# Issues in these statuses are worth a human's attention; CLAIMED and HAS-PR
-# are deliberately excluded everywhere this set is used (poll alerts, the
-# sweep report) - someone's already on it.
-ALERTABLE_STATUSES = {"OPEN-FREE", "CONTESTED", "UNSURE", "DISCUSS-ONLY", "AUTHOR-CLAIMED"}
+# Statuses poll will actually alert on. CLAIMED and HAS-PR are excluded -
+# someone's already on it. COMMENT-CLAIMED is also excluded here: a single
+# non-author claim comment is worth noting in a sweep report, but not worth
+# an interrupt-driven alert.
+POLL_ALERTABLE_STATUSES = {"OPEN-FREE", "CONTESTED", "UNSURE", "DISCUSS-ONLY", "AUTHOR-CLAIMED"}
+# Sweep keeps everything poll would alert on, plus COMMENT-CLAIMED - a sweep
+# is a deliberate backlog read, so it's worth surfacing there even though
+# it's not alert-worthy on its own.
+SWEEP_KEPT_STATUSES = POLL_ALERTABLE_STATUSES | {"COMMENT-CLAIMED"}
 GITHUB_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -82,6 +87,37 @@ def _summary_reason(result: dict) -> str:
     if abandoned:
         return "; ".join(abandoned)
     return f"fit {result['fit_tag']} (matched: {', '.join(result.get('matched_keywords') or []) or 'none'})"
+
+
+def _resolve_comment_mentioned_prs(
+    client: GitHubClient, repo_name: str, issue_number: int, comments: list[dict]
+) -> list[dict]:
+    """Fetch each comment-mentioned candidate and, for the ones that
+    actually are PRs, return synthetic cross-referenced-shaped timeline
+    events ready to merge into this issue's timeline (see
+    triage.extract_comment_pr_mentions / analyze_linked_prs).
+
+    A single bad mention (404, deleted, inaccessible) is skipped rather
+    than failing the whole issue; a run-level budget exception propagates
+    so the caller's existing budget handling still applies.
+    """
+    synthetic_events = []
+    for mention_repo, mention_number in extract_comment_pr_mentions(comments, repo_name, issue_number):
+        try:
+            mentioned = client.get_issue(mention_repo, mention_number)
+        except (BackoffBudgetExceeded, RequestBudgetExceeded):
+            raise
+        except GitHubAPIError:
+            continue  # deleted, inaccessible, or otherwise unresolvable - skip
+        if "pull_request" not in mentioned:
+            continue  # it's a plain issue, not a PR
+
+        enriched = dict(mentioned)
+        enriched["repository"] = {"full_name": mention_repo}
+        synthetic_events.append(
+            {"event": "cross-referenced", "source": {"type": "issue", "issue": enriched}, "_mention_source": "comment"}
+        )
+    return synthetic_events
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -169,6 +205,7 @@ def run_poll(
             try:
                 comments = list(client.list_issue_comments(repo_cfg.name, number))
                 timeline = list(client.list_issue_timeline(repo_cfg.name, number))
+                timeline += _resolve_comment_mentioned_prs(client, repo_cfg.name, number, comments)
             except (BackoffBudgetExceeded, RequestBudgetExceeded) as e:
                 print(
                     f"warning: run budget exceeded while triaging {repo_cfg.name}#{number}, stopping: {e}",
@@ -193,7 +230,7 @@ def run_poll(
                 reserved_labels=reserved_labels,
             )
 
-            if result["status"] not in ALERTABLE_STATUSES:
+            if result["status"] not in POLL_ALERTABLE_STATUSES:
                 continue
 
             message = format_alert(result, issue, repo_cfg, config.staleness_days_threshold, now=now)
@@ -350,6 +387,7 @@ def run_sweep(
             try:
                 comments = list(client.list_issue_comments(repo_cfg.name, number))
                 timeline = list(client.list_issue_timeline(repo_cfg.name, number))
+                timeline += _resolve_comment_mentioned_prs(client, repo_cfg.name, number, comments)
             except (BackoffBudgetExceeded, RequestBudgetExceeded) as e:
                 print(
                     f"warning: run budget exceeded while sweeping {repo_cfg.name}#{number}, stopping: {e}",
@@ -375,7 +413,7 @@ def run_sweep(
                 now=now,
             )
 
-            if result["status"] not in ALERTABLE_STATUSES:
+            if result["status"] not in SWEEP_KEPT_STATUSES:
                 continue  # skip PRs (already excluded by list_issues) and CLAIMED/HAS-PR
 
             result["html_url"] = issue.get("html_url")

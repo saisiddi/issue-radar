@@ -209,3 +209,34 @@ def test_request_budget_allows_exactly_the_cap():
 
     assert [r["number"] for r in results] == [1, 2]
     assert client.request_count == 2
+
+
+def test_get_issue_returns_parsed_json():
+    client, session = make_client([FakeResponse(json_data={"number": 42, "title": "x"})])
+
+    result = client.get_issue("owner/repo", 42)
+
+    assert result == {"number": 42, "title": "x"}
+    assert session.calls[0]["url"] == "https://api.github.com/repos/owner/repo/issues/42"
+
+
+def test_get_issue_raises_on_404():
+    client, session = make_client([FakeResponse(status_code=404, text="Not Found")])
+
+    with pytest.raises(GitHubAPIError) as exc_info:
+        client.get_issue("owner/repo", 999999)
+
+    assert exc_info.value.status_code == 404
+
+
+def test_get_issue_pull_request_sidecar_passed_through():
+    pr_json = {
+        "number": 1259,
+        "state": "open",
+        "pull_request": {"url": "...", "html_url": "...", "merged_at": None},
+    }
+    client, session = make_client([FakeResponse(json_data=pr_json)])
+
+    result = client.get_issue("owner/repo", 1259)
+
+    assert "pull_request" in result

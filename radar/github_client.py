@@ -150,3 +150,21 @@ class GitHubClient:
 
     def list_issue_timeline(self, repo: str, issue_number: int) -> Iterator[dict]:
         yield from self._paginate(f"{self.base_url}/repos/{repo}/issues/{issue_number}/timeline")
+
+    def get_issue(self, repo: str, number: int) -> dict:
+        """Fetch a single issue or PR by number.
+
+        If `number` is actually a PR, the response includes a
+        `pull_request` sidecar object (url/html_url/diff_url/patch_url/
+        merged_at) - same shape as a timeline cross-referenced event's
+        source.issue. Used to resolve a bare "#N" mentioned in a comment,
+        which GitHub's own cross-reference system doesn't surface on this
+        issue's own timeline (see triage.extract_comment_pr_mentions).
+        """
+        response = self._request("GET", f"{self.base_url}/repos/{repo}/issues/{number}")
+        if response.status_code != 200:
+            raise GitHubAPIError(
+                f"GET issue {repo}#{number} failed with {response.status_code}: {response.text[:200]}",
+                response.status_code,
+            )
+        return response.json()
