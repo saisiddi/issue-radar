@@ -1,3 +1,4 @@
+# Scheduled every 30 min; see README's "GitHub Actions" section.
 name: issue-radar poll
 
 on:
