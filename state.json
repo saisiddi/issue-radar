@@ -7,18 +7,24 @@
       1672,
       1673,
       1674,
-      1675
+      1675,
+      1676,
+      1680,
+      1682,
+      1681
     ],
-    "last_seen": "2026-10-04T21:40:46Z"
+    "last_seen": "2026-10-05T15:26:05Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
       1758,
       1763,
       1764,
-      1765
+      1765,
+      1767,
+      1770
     ],
-    "last_seen": "2026-10-05T01:18:33Z"
+    "last_seen": "2026-10-05T15:12:26Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
