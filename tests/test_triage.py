@@ -4,6 +4,7 @@ from pathlib import Path
 from radar.config import load_config
 from radar.triage import (
     LinkedPRResult,
+    _keyword_in,
     analyze_linked_prs,
     author_self_claim,
     compute_fit,
@@ -520,6 +521,58 @@ class TestFitWeighting:
         }
         fit, _ = compute_fit(issue, ["python", "security", "module"], ["react", "frontend"])
         assert fit == "GOOD"
+
+
+class TestWholeWordKeywordMatching:
+    def test_build_does_not_match_ui(self):
+        issue = {"title": "", "body": "", "labels": []}
+        assert _keyword_in("ui", "the function to build it") is False
+
+    def test_ui_matches_as_its_own_word(self):
+        assert _keyword_in("ui", "needs a ui redesign") is True
+
+    def test_greedybear_1674_body_does_not_trigger_ui_skip(self):
+        # Real GreedyBear #1674: body says "...the three sites that build
+        # payload IOCs..." - "ui" is a substring of "build" but not a
+        # whole word, so it must not count as a negative match.
+        issue = {
+            "title": "Over long URL is silently truncated into IOC.related_urls instead of being rejected",
+            "body": (
+                "`IOC.related_urls` is `ArrayField(CharField(max_length=900))` and the three "
+                "sites that build payload IOCs put the raw attacker url straight into it"
+            ),
+            "labels": [],
+        }
+        fit, matched = compute_fit(issue, ["security", "scanner"], ["ui", "react"])
+        assert fit != "SKIP"
+        assert "ui" not in matched
+
+    def test_api_does_not_match_rapid(self):
+        assert _keyword_in("api", "a rapid prototype") is False
+
+    def test_api_matches_as_its_own_word(self):
+        assert _keyword_in("api", "fix the api server") is True
+
+    def test_bug_does_not_match_debug(self):
+        assert _keyword_in("bug", "use debug mode") is False
+
+    def test_bug_matches_as_its_own_word(self):
+        assert _keyword_in("bug", "this is a bug report") is True
+
+    def test_multi_word_phrase_still_matches_as_a_unit(self):
+        assert _keyword_in("javascript-only", "this is javascript-only code") is True
+
+    def test_multi_word_phrase_does_not_partially_match(self):
+        assert _keyword_in("javascript-only", "javascript and only that") is False
+
+    def test_compute_fit_end_to_end_whole_word_vs_substring(self):
+        # Same body, two keyword lists: "ui" as a negative keyword should
+        # not fire on "build", but "build" itself (if configured) should.
+        issue = {"title": "x", "body": "we build the thing", "labels": []}
+        fit_ui, matched_ui = compute_fit(issue, [], ["ui"])
+        fit_build, matched_build = compute_fit(issue, [], ["build"])
+        assert fit_ui == "MAYBE"
+        assert fit_build == "SKIP"
 
 
 class TestReservedLabels:

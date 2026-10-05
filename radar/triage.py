@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 
 # GitHub's own auto-close keywords: close(s/d), fix(es/ed), resolve(s/d),
 # optionally qualified with "owner/repo#N" for a cross-repo reference.
@@ -263,6 +264,18 @@ def _is_docs_issue(issue: dict) -> bool:
     return title.startswith("docs") or title.startswith("documentation")
 
 
+@lru_cache(maxsize=None)
+def _keyword_pattern(keyword: str) -> re.Pattern:
+    """Whole-word match for a keyword/phrase - \\b only at the two ends, so
+    "ui" doesn't match inside "build" or "guide", but a multi-word phrase
+    like "javascript-only" still matches as a unit."""
+    return re.compile(r"\b" + re.escape(keyword) + r"\b")
+
+
+def _keyword_in(keyword: str, text: str) -> bool:
+    return _keyword_pattern(keyword).search(text) is not None
+
+
 def compute_fit(issue: dict, positive_keywords: list[str], negative_keywords: list[str]) -> tuple[str, list[str]]:
     if _is_docs_issue(issue):
         return "DOCS", ["docs"]
@@ -275,10 +288,10 @@ def compute_fit(issue: dict, positive_keywords: list[str], negative_keywords: li
     strong_text = " ".join(_label_names(issue.get("labels", [])) + [(issue.get("title") or "").lower()])
     weak_text = (issue.get("body") or "")[:BODY_EXCERPT_CHARS].lower()
 
-    strong_positive = [k for k in positive_keywords if k in strong_text]
-    strong_negative = [k for k in negative_keywords if k in strong_text]
-    weak_positive = [k for k in positive_keywords if k not in strong_positive and k in weak_text]
-    weak_negative = [k for k in negative_keywords if k not in strong_negative and k in weak_text]
+    strong_positive = [k for k in positive_keywords if _keyword_in(k, strong_text)]
+    strong_negative = [k for k in negative_keywords if _keyword_in(k, strong_text)]
+    weak_positive = [k for k in positive_keywords if k not in strong_positive and _keyword_in(k, weak_text)]
+    weak_negative = [k for k in negative_keywords if k not in strong_negative and _keyword_in(k, weak_text)]
 
     matched_positive = strong_positive + weak_positive
     matched_negative = strong_negative + weak_negative
