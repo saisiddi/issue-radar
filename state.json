@@ -15,15 +15,16 @@
     "alerted_issue_numbers": [
       1758,
       1763,
-      1764
+      1764,
+      1765
     ],
-    "last_seen": "2026-10-04T16:01:36Z"
+    "last_seen": "2026-10-05T01:18:33Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
       3973
     ],
-    "last_seen": "2026-10-04T14:42:33Z"
+    "last_seen": "2026-10-05T04:16:45Z"
   },
   "openwisp/openwisp-firmware-upgrader": {
     "alerted_issue_numbers": [
