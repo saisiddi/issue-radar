@@ -13,7 +13,7 @@
       1682,
       1681
     ],
-    "last_seen": "2026-10-05T19:25:57Z"
+    "last_seen": "2026-10-06T06:51:37Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -31,6 +31,10 @@
       3973
     ],
     "last_seen": "2026-10-05T04:16:45Z"
+  },
+  "openwisp/netjsonconfig": {
+    "alerted_issue_numbers": [],
+    "last_seen": "2026-10-06T09:18:37Z"
   },
   "openwisp/openwisp-firmware-upgrader": {
     "alerted_issue_numbers": [
