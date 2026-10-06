@@ -44,6 +44,36 @@ def test_load_config_repos():
     assert "GreedyBear-Project/GreedyBear" in names
     assert "intelowlproject/IntelOwl" in names
     assert "openwisp/openwisp-firmware-upgrader" in names
+    assert "openwisp/netjsonconfig" in names
+
+
+def test_load_config_netjsonconfig_repo_settings():
+    config = load_config(CONFIG_PATH)
+    repo = next(r for r in config.repos if r.name == "openwisp/netjsonconfig")
+    assert repo.org == "OpenWISP"
+    assert repo.reviewers == ["nemesifier", "pandafy"]
+
+
+def test_load_config_both_openwisp_repos_reserve_gsoc_idea_label():
+    config = load_config(CONFIG_PATH)
+    for repo_name in ["openwisp/openwisp-firmware-upgrader", "openwisp/netjsonconfig"]:
+        repo = next(r for r in config.repos if r.name == repo_name)
+        assert repo.reserved_labels == ["gsoc-idea"]
+
+
+def test_effective_keywords_gsoc_idea_reserved_for_both_openwisp_repos():
+    config = load_config(CONFIG_PATH)
+    for repo_name in ["openwisp/openwisp-firmware-upgrader", "openwisp/netjsonconfig"]:
+        repo = next(r for r in config.repos if r.name == repo_name)
+        _, _, _, reserved = effective_keywords(repo, config)
+        assert "gsoc-idea" in reserved
+
+
+def test_effective_keywords_other_repos_unaffected_by_openwisp_override():
+    config = load_config(CONFIG_PATH)
+    nettacker = next(r for r in config.repos if r.name == "OWASP/Nettacker")
+    _, _, _, reserved = effective_keywords(nettacker, config)
+    assert reserved == config.reserved_labels  # still the full global list, unchanged
 
 
 def test_load_config_reserve_flag():

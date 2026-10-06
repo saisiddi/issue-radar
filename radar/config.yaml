@@ -33,6 +33,15 @@ repos:
     reviewers: [nemesifier, pandafy]
     requires_assignment: false
     reserve: true
+    # OpenWISP reserves GSoC-idea issues with this label specifically.
+    reserved_labels: [gsoc-idea]
+
+  - name: openwisp/netjsonconfig
+    org: OpenWISP
+    reviewers: [nemesifier, pandafy]
+    requires_assignment: true
+    # OpenWISP reserves GSoC-idea issues with this label specifically.
+    reserved_labels: [gsoc-idea]
 
 # Keywords used by triage.fit_tag. Matching is case-insensitive against
 # issue labels, title, and body.
