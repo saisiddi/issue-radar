@@ -13,7 +13,7 @@
       1682,
       1681
     ],
-    "last_seen": "2026-10-06T06:51:37Z"
+    "last_seen": "2026-10-06T12:30:29Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -28,9 +28,10 @@
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
-      3973
+      3973,
+      4059
     ],
-    "last_seen": "2026-10-05T04:16:45Z"
+    "last_seen": "2026-10-06T15:56:52Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
