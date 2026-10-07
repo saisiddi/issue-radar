@@ -57,6 +57,17 @@ class SweepConfig:
 
 
 @dataclass
+class DigestConfig:
+    enabled: bool = True
+    # Checked on every poll run, not cron-scheduled directly - GitHub's
+    # scheduler is unreliable enough (observed multi-hour drift on this
+    # repo) that a fixed cron time would often just get skipped anyway.
+    # Using a threshold just under 24h means irregular poll timing still
+    # gets one digest roughly once a day, rather than slipping a day.
+    interval_hours: float = 23.0
+
+
+@dataclass
 class Config:
     repos: list[RepoConfig]
     positive_keywords: list[str]
@@ -69,6 +80,7 @@ class Config:
     limits: LimitsConfig
     poll: PollConfig
     sweep: SweepConfig
+    digest: DigestConfig
     state_file: str
     sweep_report_file: str
     # Your own GitHub login. Issues you authored are never alerted on in
@@ -98,6 +110,7 @@ def load_config(path: str | Path) -> Config:
     limits_raw = raw.get("limits", {})
     poll_raw = raw.get("poll", {})
     sweep_raw = raw.get("sweep", {})
+    digest_raw = raw.get("digest", {})
 
     return Config(
         repos=repos,
@@ -111,6 +124,7 @@ def load_config(path: str | Path) -> Config:
         limits=LimitsConfig(**limits_raw),
         poll=PollConfig(**poll_raw),
         sweep=SweepConfig(**sweep_raw),
+        digest=DigestConfig(**digest_raw),
         state_file=raw.get("state_file", "state.json"),
         sweep_report_file=raw.get("sweep_report_file", "sweep_report.md"),
         my_username=raw.get("my_username"),

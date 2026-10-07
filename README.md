@@ -59,8 +59,9 @@ Both commands take `--config path/to/config.yaml` if you don't want the default 
 The workflow at [.github/workflows/radar.yml](.github/workflows/radar.yml) runs `poll` every 30 minutes and on manual dispatch, then commits the updated `state.json` back to the repo so dedupe state persists between runs.
 
 Two things to know about GitHub's scheduler:
-- **Cron can be delayed, sometimes by hours.** GitHub doesn't guarantee the `*/30 * * * *` schedule fires on time, and under high load a queued scheduled run can be dropped entirely rather than just delayed. Confirmed on this repo's own first day: the workflow registered at 14:45 UTC, and the first scheduled firing didn't happen until 18:19 UTC - over 3 hours later, not ~30 minutes. `:00` and `:30` past the hour (what `*/30 * * * *` uses) are also GitHub's own documented *worst* minutes to pick, since that's when load from every other repo's cron jobs peaks; an off-beat minute (e.g. `7,37 * * * *`) would likely see fewer delays. Not changed here without asking first.
+- **Cron can be delayed, sometimes by hours - and this isn't just a first-day warmup.** GitHub doesn't guarantee the `*/30 * * * *` schedule fires on time, and under high load a queued scheduled run can be dropped entirely rather than just delayed. Confirmed on this repo's first day (workflow registered 14:45 UTC, first firing 18:19 UTC - 3h34m later) *and* confirmed as the ongoing steady state: across 13 scheduled runs over roughly two days, gaps between consecutive runs averaged 5-7 hours, not 30 minutes - e.g. 22:22→02:26 (4h03m), 09:18→16:10 (6h52m), 00:56→07:06 (6h09m). Every run itself succeeded; nothing on this repo's side causes it. `:00` and `:30` past the hour (what `*/30 * * * *` uses) are also GitHub's own documented *worst* minutes to pick, since that's when load from every other repo's cron jobs peaks; an off-beat minute (e.g. `7,37 * * * *`) would likely see fewer delays. Not changed here without asking first. This irregularity is also why the daily digest (below) checks an elapsed-time threshold on every poll run rather than using its own cron trigger - a fixed clock time would be just as unreliable.
 - **Scheduled workflows on public repos are auto-disabled after 60 days with no repository activity.** The workflow's own `state.json` commits count as activity, so as long as it's actually finding issues to alert on (or at least advancing `last_seen`), it keeps itself alive. If a repo's been quiet long enough that even that stops, re-enable it from the repo's Actions tab.
+- **"No alerts" can simply mean nothing happened.** Before assuming poll is broken, check whether there were actually any new issues: `gh run list --workflow radar.yml --limit 20` shows run timing, and each run's own log (`gh run view <id> --log`) now prints every issue it examined - status, whether it alerted, and why - not just the ones it alerted on. The daily digest below is the other backstop for this.
 
 This repo is **not** pushed anywhere and has no secrets configured yet - none of that is done automatically. When you're ready, here's exactly what to run (adjust the username/repo name and secret values):
 
@@ -97,6 +98,12 @@ After secrets are set, trigger a manual run to confirm everything's wired up bef
 ```bash
 gh workflow run radar.yml
 ```
+
+### Daily digest
+
+Once a day, `poll` sends one extra Telegram message listing every issue *created* (not just updated) in the last 24h across all repos - including ones it skipped (AUTHOR-CLAIMED, COMMENT-CLAIMED, HAS-PR, CLAIMED...), and repos with nothing new, explicitly. The point is that silence from the bot should never be ambiguous between "nothing happened" and "something's broken."
+
+It's controlled by `digest.enabled` and `digest.interval_hours` (default 23h) in `radar/config.yaml`, and checked on every poll run rather than its own cron trigger - see the scheduler note above for why a fixed clock time wouldn't be reliable here either. State for this (`last_digest_sent_at`) lives in `state.json` under a reserved `_meta` key, separate from per-repo state. Run `poll --digest-now` to send it immediately, bypassing the interval check, for testing.
 
 ## Your own issues
 

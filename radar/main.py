@@ -14,8 +14,8 @@ from radar.github_client import (
     GitHubClient,
     RequestBudgetExceeded,
 )
-from radar.notify import NotifierConfigError, NotifierError, format_alert, get_notifier
-from radar.state import load_state, save_state
+from radar.notify import Notifier, NotifierConfigError, NotifierError, format_alert, get_notifier
+from radar.state import State, load_state, save_state
 from radar.triage import extract_comment_pr_mentions, maintainer_replied, triage_issue
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -82,14 +82,21 @@ def _is_my_issue(issue: dict, my_username: str | None) -> bool:
 
 
 def _summary_reason(result: dict) -> str:
-    if result["status"] == "UNSURE":
+    status = result["status"]
+    if status == "UNSURE":
         return "; ".join(result.get("linked_pr_notes") or []) or "uncertain signal, check manually"
-    if result["status"] == "CONTESTED":
+    if status == "CONTESTED":
         return f"{result['claim_comments']} claim comments, unassigned"
-    if result["status"] == "DISCUSS-ONLY":
+    if status == "COMMENT-CLAIMED":
+        return f"{result['claim_comments']} claim comment, unassigned"
+    if status == "DISCUSS-ONLY":
         return f"reserved: {', '.join(result.get('reserved_hints') or [])}"
-    if result["status"] == "AUTHOR-CLAIMED":
+    if status == "AUTHOR-CLAIMED":
         return f"author self-claim: {result.get('author_claim_reason') or 'unspecified'}"
+    if status == "CLAIMED":
+        return "assigned to someone"
+    if status == "HAS-PR":
+        return "; ".join(result.get("linked_pr_notes") or []) or "a linked PR already covers this"
     abandoned = [n for n in (result.get("linked_pr_notes") or []) if "closed unmerged" in n]
     if abandoned:
         return "; ".join(abandoned)
@@ -127,6 +134,93 @@ def _resolve_comment_mentioned_prs(
     return synthetic_events
 
 
+def _build_digest_message(config: Config, client: GitHubClient, now: datetime) -> str:
+    """One message, grouped by repo, covering every issue CREATED (not
+    just updated) in the last 24h - including ones that would be skipped
+    in poll, so the digest proves the radar ran even on a quiet day."""
+    window_start_str = (now - timedelta(hours=24)).strftime(GITHUB_TIMESTAMP_FORMAT)
+    lines = [f"Daily digest - new issues in the last 24h (as of {now.strftime('%Y-%m-%d %H:%M UTC')})"]
+    any_new = False
+
+    for repo_cfg in config.repos:
+        positive_keywords, negative_keywords, claim_phrases, reserved_labels = effective_keywords(repo_cfg, config)
+        lines.append("")
+        lines.append(f"{repo_cfg.name}:")
+
+        try:
+            issues = list(client.list_issues(repo_cfg.name, since=window_start_str, state="open"))
+        except (BackoffBudgetExceeded, RequestBudgetExceeded):
+            raise
+        except GitHubAPIError as e:
+            lines.append(f"  (error fetching issues: {e})")
+            continue
+
+        # list_issues' `since` filters by updated_at; "new" means created
+        # in the window, which is a narrower, different condition.
+        new_issues = [i for i in issues if (i.get("created_at") or "") >= window_start_str]
+
+        if not new_issues:
+            lines.append("  No new issues.")
+            continue
+
+        any_new = True
+        for issue in new_issues:
+            number = issue["number"]
+            try:
+                comments = list(client.list_issue_comments(repo_cfg.name, number))
+                timeline = list(client.list_issue_timeline(repo_cfg.name, number))
+                timeline += _resolve_comment_mentioned_prs(client, repo_cfg.name, number, comments)
+            except (BackoffBudgetExceeded, RequestBudgetExceeded):
+                raise
+            except GitHubAPIError as e:
+                lines.append(f"  #{number}: (error triaging: {e})")
+                continue
+
+            result = triage_issue(
+                issue=issue,
+                comments=comments,
+                timeline=timeline,
+                repo_name=repo_cfg.name,
+                positive_keywords=positive_keywords,
+                negative_keywords=negative_keywords,
+                claim_phrases=claim_phrases,
+                reserved_labels=reserved_labels,
+                now=now,
+            )
+            mine = " (you)" if _is_my_issue(issue, config.my_username) else ""
+            lines.append(f"  #{number} [{result['status']}]{mine} {issue.get('title') or ''}")
+
+    if not any_new:
+        lines.append("")
+        lines.append("Nothing new anywhere in the last 24h.")
+
+    return "\n".join(lines)
+
+
+def maybe_send_daily_digest(
+    config: Config,
+    client: GitHubClient,
+    state: State,
+    notifier: Notifier,
+    now: datetime,
+    force: bool = False,
+) -> bool:
+    """Builds and sends the digest if due (or `force`). Returns True if
+    sent, so the caller knows to persist state.last_digest_sent_at."""
+    if not config.digest.enabled:
+        return False
+
+    if not force and state.last_digest_sent_at:
+        last_sent_dt = datetime.fromisoformat(state.last_digest_sent_at.replace("Z", "+00:00"))
+        if now - last_sent_dt < timedelta(hours=config.digest.interval_hours):
+            return False
+
+    message = _build_digest_message(config, client, now)
+    notifier.send(message)
+    state.last_digest_sent_at = now.strftime(GITHUB_TIMESTAMP_FORMAT)
+    return True
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to config.yaml")
@@ -137,7 +231,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="mode", required=True)
-    subparsers.add_parser("poll", help="Alert on new/changed issues since last run", parents=[common])
+    poll_parser = subparsers.add_parser(
+        "poll", help="Alert on new/changed issues since last run", parents=[common]
+    )
+    poll_parser.add_argument(
+        "--digest-now",
+        action="store_true",
+        help="Send the daily digest immediately, bypassing the interval check (for testing)",
+    )
 
     sweep_parser = subparsers.add_parser(
         "sweep", help="One-time report over all open issues", parents=[common]
@@ -150,7 +251,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_poll(
-    config: Config, state_path: str, dry_run: bool, token: str | None, now: datetime | None = None
+    config: Config,
+    state_path: str,
+    dry_run: bool,
+    token: str | None,
+    now: datetime | None = None,
+    force_digest: bool = False,
 ) -> int:
     # Captured once, here, before any API call - this is the run's START
     # time. A run with many repos/issues can take minutes; if `now` were
@@ -173,7 +279,11 @@ def run_poll(
     )
 
     had_error = False
-    summary_rows: list[tuple[str, int, str, str, str, str]] = []
+    # Every issue examined this run, alerted or not, with why - always
+    # printed at the end (not just in --dry-run), so Action logs always
+    # show whether the radar actually ran and what it decided, instead of
+    # staying silent whenever nothing happened to be alert-worthy.
+    examined_rows: list[dict] = []
 
     for repo_cfg in config.repos:
         positive_keywords, negative_keywords, claim_phrases, reserved_labels = effective_keywords(repo_cfg, config)
@@ -206,10 +316,20 @@ def run_poll(
             if updated_at and (latest_seen is None or updated_at > latest_seen):
                 latest_seen = updated_at
 
+            title = issue.get("title") or ""
+
             if number in repo_state.alerted_issue_numbers:
+                examined_rows.append(
+                    {"repo": repo_cfg.name, "number": number, "title": title, "status": "(already alerted)",
+                     "alerted": False, "reason": "already alerted on a previous run"}
+                )
                 continue
 
             if _is_my_issue(issue, config.my_username):
+                examined_rows.append(
+                    {"repo": repo_cfg.name, "number": number, "title": title, "status": "(your issue)",
+                     "alerted": False, "reason": "your own issue - never alerted"}
+                )
                 continue  # never alert on issues you authored yourself
 
             try:
@@ -227,6 +347,10 @@ def run_poll(
             except GitHubAPIError as e:
                 print(f"warning: skipping {repo_cfg.name}#{number} after error: {e}", file=sys.stderr)
                 had_error = True
+                examined_rows.append(
+                    {"repo": repo_cfg.name, "number": number, "title": title, "status": "(error)",
+                     "alerted": False, "reason": str(e)}
+                )
                 continue
 
             result = triage_issue(
@@ -239,8 +363,13 @@ def run_poll(
                 claim_phrases=claim_phrases,
                 reserved_labels=reserved_labels,
             )
+            reason = _summary_reason(result)
 
             if result["status"] not in POLL_ALERTABLE_STATUSES:
+                examined_rows.append(
+                    {"repo": repo_cfg.name, "number": number, "title": title, "status": result["status"],
+                     "alerted": False, "reason": reason}
+                )
                 continue
 
             message = format_alert(result, issue, repo_cfg, config.staleness_days_threshold, now=now)
@@ -249,11 +378,16 @@ def run_poll(
             except NotifierError as e:
                 print(f"warning: failed to send alert for {repo_cfg.name}#{number}: {e}", file=sys.stderr)
                 had_error = True
+                examined_rows.append(
+                    {"repo": repo_cfg.name, "number": number, "title": title, "status": result["status"],
+                     "alerted": False, "reason": f"send failed: {e}"}
+                )
                 continue
 
             repo_state.alerted_issue_numbers.append(number)
-            summary_rows.append(
-                (repo_cfg.name, number, issue.get("title") or "", result["status"], result["fit_tag"], _summary_reason(result))
+            examined_rows.append(
+                {"repo": repo_cfg.name, "number": number, "title": title, "status": result["status"],
+                 "alerted": True, "reason": reason}
             )
 
         repo_state.last_seen = latest_seen
@@ -262,12 +396,24 @@ def run_poll(
         if budget_exhausted:
             break
 
-    if dry_run and summary_rows:
+    if examined_rows:
         print()
-        print(f"{'repo':<45} {'#':>6} {'status':<12} {'fit':<7} title / reason")
-        for repo, number, title, status, fit_tag, reason in summary_rows:
-            print(f"{repo:<45} {number:>6} {status:<12} {fit_tag:<7} {title}")
-            print(f"{'':<45} {'':>6} {'':<12} {'':<7} -> {reason}")
+        print(f"{'repo':<45} {'#':>6} {'status':<16} {'alerted':<8} title / reason")
+        for row in examined_rows:
+            alerted_str = "yes" if row["alerted"] else "no"
+            print(f"{row['repo']:<45} {row['number']:>6} {row['status']:<16} {alerted_str:<8} {row['title']}")
+            print(f"{'':<45} {'':>6} {'':<16} {'':<8} -> {row['reason']}")
+
+    try:
+        if maybe_send_daily_digest(config, client, state, notifier, now, force=force_digest):
+            save_state(state, state_path)
+            print("Daily digest sent.", file=sys.stderr)
+    except (BackoffBudgetExceeded, RequestBudgetExceeded) as e:
+        print(f"warning: run budget exceeded while building daily digest: {e}", file=sys.stderr)
+        had_error = True
+    except NotifierError as e:
+        print(f"warning: failed to send daily digest: {e}", file=sys.stderr)
+        had_error = True
 
     print(f"\nAPI requests used this run: {client.request_count}", file=sys.stderr)
 
@@ -510,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
     dry_run = args.dry_run or config.notifier.dry_run
 
     if args.mode == "poll":
-        return run_poll(config, config.state_file, dry_run, token)
+        return run_poll(config, config.state_file, dry_run, token, force_digest=getattr(args, "digest_now", False))
     elif args.mode == "sweep":
         return run_sweep(config, dry_run, token, getattr(args, "repo", None))
 

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from radar.config import (
     Config,
+    DigestConfig,
     LimitsConfig,
     LLMConfig,
     NotifierConfig,
@@ -190,6 +191,7 @@ class TestPerRepoOverrides:
             llm=LLMConfig(),
             limits=LimitsConfig(),
             poll=PollConfig(),
+            digest=DigestConfig(),
             sweep=SweepConfig(),
             state_file="state.json",
             sweep_report_file="sweep_report.md",

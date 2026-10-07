@@ -3,23 +3,42 @@ import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from radar.config import Config, LimitsConfig, LLMConfig, NotifierConfig, PollConfig, RepoConfig, SweepConfig
+from radar.config import (
+    Config,
+    DigestConfig,
+    LimitsConfig,
+    LLMConfig,
+    NotifierConfig,
+    PollConfig,
+    RepoConfig,
+    SweepConfig,
+)
 from radar.github_client import BackoffBudgetExceeded, GitHubAPIError
 from radar.main import (
     GITHUB_TIMESTAMP_FORMAT,
+    _build_digest_message,
     _is_my_issue,
     _sweep_report_path,
+    maybe_send_daily_digest,
     resolve_github_token,
     run_poll,
     run_sweep,
 )
-from radar.state import load_state
+from radar.notify import DryRunNotifier
+from radar.state import State, load_state
 
 NOW = datetime(2026, 2, 1, tzinfo=timezone.utc)
 NOW_STR = NOW.strftime(GITHUB_TIMESTAMP_FORMAT)
 
 
-def make_config(repos, notifier_type="telegram", first_run_window_days=3, my_username=None):
+def make_config(
+    repos,
+    notifier_type="telegram",
+    first_run_window_days=3,
+    my_username=None,
+    digest_enabled=False,
+    digest_interval_hours=23,
+):
     return Config(
         repos=repos,
         positive_keywords=["python", "security"],
@@ -32,13 +51,19 @@ def make_config(repos, notifier_type="telegram", first_run_window_days=3, my_use
         limits=LimitsConfig(max_total_backoff_seconds=300, max_api_calls_per_run=None),
         poll=PollConfig(first_run_window_days=first_run_window_days),
         sweep=SweepConfig(),
+        # Off by default here so the many existing poll/sweep tests that
+        # predate the digest feature aren't affected by it - see
+        # TestDailyDigest for dedicated digest_enabled=True tests.
+        digest=DigestConfig(enabled=digest_enabled, interval_hours=digest_interval_hours),
         state_file="state.json",
         sweep_report_file="sweep_report.md",
         my_username=my_username,
     )
 
 
-def make_issue(number, assignees=None, labels=None, updated_at="2026-01-01T00:00:00Z", author="someone"):
+def make_issue(
+    number, assignees=None, labels=None, updated_at="2026-01-01T00:00:00Z", author="someone", created_at=None
+):
     return {
         "number": number,
         "title": f"Issue {number}: python security bug",
@@ -46,7 +71,7 @@ def make_issue(number, assignees=None, labels=None, updated_at="2026-01-01T00:00
         "labels": labels or [],
         "assignees": assignees or [],
         "updated_at": updated_at,
-        "created_at": updated_at,
+        "created_at": created_at if created_at is not None else updated_at,
         "html_url": f"https://github.com/owner/repo/issues/{number}",
         "user": {"login": author},
     }
@@ -135,7 +160,12 @@ class TestRunPollDryRun:
         rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
 
         assert rc == 0
-        assert capsys.readouterr().out == ""
+        out = capsys.readouterr().out
+        # No Telegram alert was sent (that's the dry-run notifier's own
+        # output, which would say so) - but the always-on examined-issues
+        # log still shows it was seen and why it wasn't alerted.
+        assert "CLAIMED" in out
+        assert "alerted" in out.lower()
         state = load_state(state_path)
         repo_state = state.for_repo("owner/repo")
         assert repo_state.alerted_issue_numbers == []
@@ -364,7 +394,9 @@ class TestMyIssuesExcludedFromPollAlerts:
         rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
 
         assert rc == 0
-        assert capsys.readouterr().out == ""
+        out = capsys.readouterr().out
+        assert "(your issue)" in out
+        assert "never alerted" in out
         # No detail calls either - skipped before fetching comments/timeline.
         detail_calls = [c for c in fake_client.calls if c[0] in ("list_issue_comments", "list_issue_timeline")]
         assert detail_calls == []
@@ -481,7 +513,11 @@ class TestCommentClaimedStatus:
         rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
 
         assert rc == 0
-        assert capsys.readouterr().out == ""  # COMMENT-CLAIMED is not poll-alertable
+        out = capsys.readouterr().out
+        # No Telegram alert (COMMENT-CLAIMED is not poll-alertable) - but
+        # the always-on log still shows it was seen and why it was skipped.
+        assert "COMMENT-CLAIMED" in out
+        assert " no " in out or "alerted" in out.lower()
 
     def test_comment_claimed_issue_kept_in_sweep_report(self, monkeypatch, tmp_path):
         repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
@@ -547,7 +583,11 @@ class TestCommentMentionedPRs:
         rc = run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
 
         assert rc == 0
-        assert capsys.readouterr().out == ""  # HAS-PR is never poll-alertable
+        out = capsys.readouterr().out
+        # No Telegram alert (HAS-PR is never poll-alertable) - but the
+        # always-on log still shows it was seen and why.
+        assert "HAS-PR" in out
+        assert "mentioned in a comment" in out
         assert ("get_issue", "owner/repo", 1259) in fake_client.calls
 
     def test_sweep_shows_has_pr_from_comment_mention_is_excluded(self, monkeypatch, tmp_path):
@@ -1139,3 +1179,194 @@ class TestRunPollNotifierConfig:
 
         assert rc == 1
         assert fake_client.calls == []
+
+
+class TestBuildDigestMessage:
+    def test_lists_new_issue_with_status(self):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        new_issue = make_issue(1, updated_at=NOW_STR, created_at=(NOW - timedelta(hours=1)).strftime(GITHUB_TIMESTAMP_FORMAT))
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [new_issue]})
+
+        message = _build_digest_message(config, fake_client, NOW)
+
+        assert "owner/repo" in message
+        assert "#1" in message
+        assert "OPEN-FREE" in message
+
+    def test_excludes_issue_only_updated_not_created_in_window(self):
+        # updated_at is recent (within 24h via `since`), but created_at is
+        # old - list_issues' `since` filters by updated_at, so this issue
+        # comes back from the fetch, but it's not "new" and must be
+        # excluded from the digest.
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        old_issue = make_issue(1, updated_at="2026-01-31T23:00:00Z")
+        old_issue["created_at"] = "2025-01-01T00:00:00Z"
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [old_issue]})
+
+        message = _build_digest_message(config, fake_client, NOW)
+
+        assert "No new issues" in message
+        assert "#1" not in message
+
+    def test_no_new_issues_says_so_per_repo(self):
+        repo1 = RepoConfig(name="owner/repo1", org="Org", reviewers=[])
+        repo2 = RepoConfig(name="owner/repo2", org="Org", reviewers=[])
+        config = make_config([repo1, repo2])
+        fake_client = FakeGitHubClient(issues_by_repo={})
+
+        message = _build_digest_message(config, fake_client, NOW)
+
+        assert "owner/repo1" in message
+        assert "owner/repo2" in message
+        assert message.count("No new issues.") == 2
+        assert "Nothing new anywhere" in message
+
+    def test_marks_own_issue(self):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], my_username="saisiddi")
+        mine = make_issue(1, author="saisiddi", updated_at=NOW_STR, created_at=(NOW - timedelta(hours=1)).strftime(GITHUB_TIMESTAMP_FORMAT))
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": [mine]})
+
+        message = _build_digest_message(config, fake_client, NOW)
+
+        assert "(you)" in message
+
+    def test_unresolvable_comment_mention_does_not_break_digest(self):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo])
+        issue = make_issue(1, updated_at=NOW_STR, created_at=(NOW - timedelta(hours=1)).strftime(GITHUB_TIMESTAMP_FORMAT))
+        fake_client = FakeGitHubClient(
+            issues_by_repo={"owner/repo": [issue]},
+            comments_by_issue={("owner/repo", 1): [{"user": {"login": "x"}, "body": "see #999999"}]},
+            raise_on_get_issue={("owner/repo", 999999): GitHubAPIError("not found", 404)},
+        )
+
+        message = _build_digest_message(config, fake_client, NOW)
+
+        assert "#1" in message
+        assert "OPEN-FREE" in message
+
+
+class TestMaybeSendDailyDigest:
+    def test_sends_when_never_sent_before(self, monkeypatch):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=True)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        state = State()
+        notifier = DryRunNotifier()
+
+        sent = maybe_send_daily_digest(config, fake_client, state, notifier, NOW)
+
+        assert sent is True
+        assert state.last_digest_sent_at == NOW_STR
+
+    def test_skips_when_interval_not_elapsed(self):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=True, digest_interval_hours=23)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        state = State()
+        state.last_digest_sent_at = (NOW - timedelta(hours=5)).strftime(GITHUB_TIMESTAMP_FORMAT)
+        notifier = DryRunNotifier()
+
+        sent = maybe_send_daily_digest(config, fake_client, state, notifier, NOW)
+
+        assert sent is False
+        assert state.last_digest_sent_at == (NOW - timedelta(hours=5)).strftime(GITHUB_TIMESTAMP_FORMAT)
+
+    def test_sends_when_interval_elapsed(self):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=True, digest_interval_hours=23)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        state = State()
+        state.last_digest_sent_at = (NOW - timedelta(hours=24)).strftime(GITHUB_TIMESTAMP_FORMAT)
+        notifier = DryRunNotifier()
+
+        sent = maybe_send_daily_digest(config, fake_client, state, notifier, NOW)
+
+        assert sent is True
+        assert state.last_digest_sent_at == NOW_STR
+
+    def test_force_bypasses_interval(self):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=True, digest_interval_hours=23)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        state = State()
+        state.last_digest_sent_at = (NOW - timedelta(minutes=5)).strftime(GITHUB_TIMESTAMP_FORMAT)
+        notifier = DryRunNotifier()
+
+        sent = maybe_send_daily_digest(config, fake_client, state, notifier, NOW, force=True)
+
+        assert sent is True
+
+    def test_disabled_config_never_sends(self):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=False)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        state = State()
+        notifier = DryRunNotifier()
+
+        sent = maybe_send_daily_digest(config, fake_client, state, notifier, NOW, force=True)
+
+        assert sent is False
+
+
+class TestRunPollDailyDigest:
+    def test_digest_sent_when_due(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=True, digest_interval_hours=23)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "Daily digest" in out
+        state = load_state(state_path)
+        assert state.last_digest_sent_at == NOW_STR
+
+    def test_digest_not_sent_when_disabled(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=False)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "Daily digest" not in out
+
+    def test_digest_not_sent_twice_within_interval(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=True, digest_interval_hours=23)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        state_path.write_text(
+            json.dumps({"owner/repo": {"last_seen": None, "alerted_issue_numbers": []},
+                        "_meta": {"last_digest_sent_at": (NOW - timedelta(hours=1)).strftime(GITHUB_TIMESTAMP_FORMAT)}})
+        )
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW)
+
+        out = capsys.readouterr().out
+        assert "Daily digest" not in out
+
+    def test_digest_now_flag_forces_send(self, monkeypatch, tmp_path, capsys):
+        repo = RepoConfig(name="owner/repo", org="Org", reviewers=[])
+        config = make_config([repo], digest_enabled=True, digest_interval_hours=23)
+        fake_client = FakeGitHubClient(issues_by_repo={"owner/repo": []})
+        patch_client(monkeypatch, fake_client)
+
+        state_path = tmp_path / "state.json"
+        state_path.write_text(
+            json.dumps({"owner/repo": {"last_seen": None, "alerted_issue_numbers": []},
+                        "_meta": {"last_digest_sent_at": (NOW - timedelta(minutes=1)).strftime(GITHUB_TIMESTAMP_FORMAT)}})
+        )
+        run_poll(config, str(state_path), dry_run=True, token="tok", now=NOW, force_digest=True)
+
+        out = capsys.readouterr().out
+        assert "Daily digest" in out

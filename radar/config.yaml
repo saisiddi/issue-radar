@@ -150,3 +150,15 @@ sweep:
   # AND no activity for at least this many days gets split into a separate
   # "Old / unanswered" section at the bottom instead of the main table.
   very_old_days_threshold: 180
+
+digest:
+  # Once a day, poll sends one Telegram message listing every issue newly
+  # CREATED in the last 24h across all repos - including ones it skipped
+  # (AUTHOR-CLAIMED, COMMENT-CLAIMED, HAS-PR, CLAIMED...) and repos with
+  # nothing new - so silence never hides whether the radar ran at all.
+  # Checked on every poll run rather than its own cron: GitHub's scheduler
+  # has shown multi-hour drift on this repo, so a fixed "9 PM IST" trigger
+  # would often just get skipped. This fires once interval_hours have
+  # passed since the last digest, whenever poll next happens to run.
+  enabled: true
+  interval_hours: 23
