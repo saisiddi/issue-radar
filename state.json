@@ -27,7 +27,7 @@
       1771,
       1773
     ],
-    "last_seen": "2026-10-07T20:03:05Z"
+    "last_seen": "2026-10-07T20:31:57Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-10-07T18:20:21Z"
@@ -45,8 +45,9 @@
   },
   "openwisp/openwisp-firmware-upgrader": {
     "alerted_issue_numbers": [
-      18
+      18,
+      14
     ],
-    "last_seen": "2026-10-03T19:23:31Z"
+    "last_seen": "2026-10-07T21:53:26Z"
   }
 }
