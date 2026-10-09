@@ -15,7 +15,7 @@
       1707,
       1717
     ],
-    "last_seen": "2026-10-08T22:44:44Z"
+    "last_seen": "2026-10-09T04:46:22Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -38,7 +38,7 @@
       3973,
       4059
     ],
-    "last_seen": "2026-10-08T16:25:09Z"
+    "last_seen": "2026-10-09T07:24:03Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
