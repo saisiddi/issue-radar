@@ -47,8 +47,9 @@
   "openwisp/openwisp-firmware-upgrader": {
     "alerted_issue_numbers": [
       18,
-      14
+      14,
+      497
     ],
-    "last_seen": "2026-10-07T21:53:26Z"
+    "last_seen": "2026-10-09T21:04:59Z"
   }
 }
