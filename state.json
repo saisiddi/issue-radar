@@ -13,9 +13,12 @@
       1682,
       1681,
       1707,
-      1717
+      1717,
+      1719,
+      1721,
+      1722
     ],
-    "last_seen": "2026-10-10T03:51:16Z"
+    "last_seen": "2026-10-10T12:00:52Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -26,9 +29,10 @@
       1767,
       1770,
       1771,
-      1773
+      1773,
+      1780
     ],
-    "last_seen": "2026-10-08T22:26:34Z"
+    "last_seen": "2026-10-10T09:22:44Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-10-09T20:15:23Z"
@@ -36,9 +40,10 @@
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
       3973,
-      4059
+      4059,
+      4068
     ],
-    "last_seen": "2026-10-10T04:39:15Z"
+    "last_seen": "2026-10-10T09:31:31Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
