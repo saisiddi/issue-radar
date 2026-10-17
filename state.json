@@ -26,9 +26,10 @@
       1755,
       1756,
       1757,
-      1759
+      1759,
+      1760
     ],
-    "last_seen": "2026-10-17T11:12:12Z"
+    "last_seen": "2026-10-17T14:27:51Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
