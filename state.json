@@ -31,7 +31,7 @@
       1761,
       1762
     ],
-    "last_seen": "2026-10-18T17:11:10Z"
+    "last_seen": "2026-10-18T22:08:24Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -51,7 +51,7 @@
     "last_seen": "2026-10-18T16:52:56Z"
   },
   "_meta": {
-    "last_digest_sent_at": "2026-10-17T23:51:41Z"
+    "last_digest_sent_at": "2026-10-18T23:59:43Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
