@@ -37,9 +37,10 @@
       1782,
       1783,
       1787,
-      1788
+      1788,
+      1789
     ],
-    "last_seen": "2026-10-24T19:01:27Z"
+    "last_seen": "2026-10-25T08:22:42Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -64,12 +65,13 @@
       1797,
       1799,
       1802,
-      1803
+      1803,
+      1806
     ],
-    "last_seen": "2026-10-24T20:13:28Z"
+    "last_seen": "2026-10-25T08:53:16Z"
   },
   "_meta": {
-    "last_digest_sent_at": "2026-10-24T09:01:52Z"
+    "last_digest_sent_at": "2026-10-25T10:02:24Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
