@@ -66,9 +66,10 @@
       1799,
       1802,
       1803,
-      1806
+      1806,
+      1809
     ],
-    "last_seen": "2026-10-25T08:53:16Z"
+    "last_seen": "2026-10-26T03:50:39Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-10-25T10:02:24Z"
@@ -87,7 +88,7 @@
       4103,
       4104
     ],
-    "last_seen": "2026-10-25T16:39:23Z"
+    "last_seen": "2026-10-26T03:39:07Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
