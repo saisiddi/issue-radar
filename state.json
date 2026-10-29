@@ -42,9 +42,10 @@
       1799,
       1804,
       1805,
-      1806
+      1806,
+      1809
     ],
-    "last_seen": "2026-10-29T06:57:11Z"
+    "last_seen": "2026-10-29T16:24:57Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -98,11 +99,11 @@
       4111,
       4119
     ],
-    "last_seen": "2026-10-29T03:03:21Z"
+    "last_seen": "2026-10-29T15:57:25Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
-    "last_seen": "2026-10-22T20:18:23Z"
+    "last_seen": "2026-10-29T11:27:31Z"
   },
   "openwisp/openwisp-firmware-upgrader": {
     "alerted_issue_numbers": [
