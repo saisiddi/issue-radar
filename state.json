@@ -41,9 +41,10 @@
       1789,
       1799,
       1804,
-      1805
+      1805,
+      1806
     ],
-    "last_seen": "2026-10-28T21:32:58Z"
+    "last_seen": "2026-10-29T06:57:11Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -76,7 +77,7 @@
       1815,
       1817
     ],
-    "last_seen": "2026-10-29T01:02:47Z"
+    "last_seen": "2026-10-29T09:06:18Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-10-28T19:00:36Z"
@@ -97,7 +98,7 @@
       4111,
       4119
     ],
-    "last_seen": "2026-10-28T17:24:17Z"
+    "last_seen": "2026-10-29T03:03:21Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
