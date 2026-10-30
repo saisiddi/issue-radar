@@ -45,7 +45,7 @@
       1806,
       1809
     ],
-    "last_seen": "2026-10-29T19:04:55Z"
+    "last_seen": "2026-10-29T21:52:20Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -78,7 +78,7 @@
       1815,
       1817
     ],
-    "last_seen": "2026-10-29T21:10:56Z"
+    "last_seen": "2026-10-29T23:01:17Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-10-29T21:39:50Z"
