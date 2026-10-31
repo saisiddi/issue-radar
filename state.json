@@ -44,9 +44,10 @@
       1805,
       1806,
       1809,
-      1814
+      1814,
+      1815
     ],
-    "last_seen": "2026-10-31T08:02:36Z"
+    "last_seen": "2026-10-31T12:53:04Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -99,9 +100,11 @@
       4103,
       4104,
       4111,
-      4119
+      4119,
+      4055,
+      3639
     ],
-    "last_seen": "2026-10-30T19:26:39Z"
+    "last_seen": "2026-10-31T15:11:51Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
