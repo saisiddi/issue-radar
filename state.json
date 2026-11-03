@@ -91,7 +91,7 @@
     "last_seen": "2026-11-02T18:16:19Z"
   },
   "_meta": {
-    "last_digest_sent_at": "2026-11-02T01:21:43Z"
+    "last_digest_sent_at": "2026-11-03T01:28:11Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
@@ -111,7 +111,7 @@
       4055,
       3639
     ],
-    "last_seen": "2026-11-02T15:10:14Z"
+    "last_seen": "2026-11-02T19:19:11Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
