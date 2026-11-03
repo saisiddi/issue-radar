@@ -88,7 +88,7 @@
       1829,
       1828
     ],
-    "last_seen": "2026-11-02T18:16:19Z"
+    "last_seen": "2026-11-03T04:50:15Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-11-03T01:28:11Z"
@@ -109,9 +109,10 @@
       4111,
       4119,
       4055,
-      3639
+      3639,
+      4133
     ],
-    "last_seen": "2026-11-02T19:19:11Z"
+    "last_seen": "2026-11-03T07:37:02Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [],
