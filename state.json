@@ -53,7 +53,7 @@
       1794,
       1830
     ],
-    "last_seen": "2026-11-04T20:24:00Z"
+    "last_seen": "2026-11-05T18:20:48Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -143,6 +143,6 @@
       471,
       331
     ],
-    "last_seen": "2026-11-05T11:58:07Z"
+    "last_seen": "2026-11-05T11:59:11Z"
   }
 }
