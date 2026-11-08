@@ -107,12 +107,16 @@
       1849,
       1850,
       1855,
-      1856
+      1856,
+      1859,
+      1860,
+      1861,
+      1862
     ],
-    "last_seen": "2026-11-08T01:48:20Z"
+    "last_seen": "2026-11-08T08:14:56Z"
   },
   "_meta": {
-    "last_digest_sent_at": "2026-11-07T07:38:54Z"
+    "last_digest_sent_at": "2026-11-08T09:22:37Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
