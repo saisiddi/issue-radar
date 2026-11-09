@@ -141,11 +141,13 @@
       4135,
       4137
     ],
-    "last_seen": "2026-11-07T08:16:27Z"
+    "last_seen": "2026-11-09T07:36:43Z"
   },
   "openwisp/netjsonconfig": {
-    "alerted_issue_numbers": [],
-    "last_seen": "2026-10-29T11:27:31Z"
+    "alerted_issue_numbers": [
+      429
+    ],
+    "last_seen": "2026-11-09T07:30:01Z"
   },
   "openwisp/openwisp-firmware-upgrader": {
     "alerted_issue_numbers": [
