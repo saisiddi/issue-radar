@@ -54,9 +54,10 @@
       1830,
       1839,
       1841,
-      1842
+      1842,
+      1845
     ],
-    "last_seen": "2026-11-10T06:03:32Z"
+    "last_seen": "2026-11-10T17:02:36Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
