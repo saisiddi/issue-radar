@@ -57,7 +57,7 @@
       1842,
       1845
     ],
-    "last_seen": "2026-11-11T17:42:03Z"
+    "last_seen": "2026-11-11T18:51:44Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -117,10 +117,10 @@
       1862,
       1863
     ],
-    "last_seen": "2026-11-11T11:37:51Z"
+    "last_seen": "2026-11-11T23:54:05Z"
   },
   "_meta": {
-    "last_digest_sent_at": "2026-11-10T22:28:56Z"
+    "last_digest_sent_at": "2026-11-12T00:15:52Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
