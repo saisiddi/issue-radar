@@ -55,9 +55,10 @@
       1839,
       1841,
       1842,
-      1845
+      1845,
+      1855
     ],
-    "last_seen": "2026-11-12T15:18:01Z"
+    "last_seen": "2026-11-12T18:10:52Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -156,7 +157,7 @@
     "alerted_issue_numbers": [
       429
     ],
-    "last_seen": "2026-11-10T22:05:17Z"
+    "last_seen": "2026-11-12T19:20:43Z"
   },
   "openwisp/openwisp-firmware-upgrader": {
     "alerted_issue_numbers": [
@@ -168,6 +169,6 @@
       506,
       509
     ],
-    "last_seen": "2026-11-11T15:40:51Z"
+    "last_seen": "2026-11-12T19:21:21Z"
   }
 }
