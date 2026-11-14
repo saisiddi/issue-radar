@@ -127,9 +127,10 @@
       1875,
       1876,
       1883,
-      1884
+      1884,
+      1521
     ],
-    "last_seen": "2026-11-13T18:31:28Z"
+    "last_seen": "2026-11-13T22:12:44Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-11-13T03:17:03Z"
@@ -155,7 +156,7 @@
       4135,
       4137
     ],
-    "last_seen": "2026-11-13T17:01:35Z"
+    "last_seen": "2026-11-13T19:51:49Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [
