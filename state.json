@@ -157,9 +157,10 @@
       3639,
       4133,
       4135,
-      4137
+      4137,
+      4150
     ],
-    "last_seen": "2026-11-13T19:51:49Z"
+    "last_seen": "2026-11-14T17:00:50Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [
