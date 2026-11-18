@@ -143,10 +143,10 @@
       1905,
       1906
     ],
-    "last_seen": "2026-11-18T01:02:55Z"
+    "last_seen": "2026-11-18T10:37:43Z"
   },
   "_meta": {
-    "last_digest_sent_at": "2026-11-17T12:53:34Z"
+    "last_digest_sent_at": "2026-11-18T12:07:14Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
@@ -172,7 +172,7 @@
       4154,
       4156
     ],
-    "last_seen": "2026-11-17T07:17:32Z"
+    "last_seen": "2026-11-18T06:22:29Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [
