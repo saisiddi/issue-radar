@@ -63,7 +63,7 @@
       1866,
       1872
     ],
-    "last_seen": "2026-11-18T19:54:33Z"
+    "last_seen": "2026-11-19T12:04:24Z"
   },
   "OWASP/Nettacker": {
     "alerted_issue_numbers": [
@@ -148,7 +148,7 @@
     "last_seen": "2026-11-19T00:06:58Z"
   },
   "_meta": {
-    "last_digest_sent_at": "2026-11-18T12:07:14Z"
+    "last_digest_sent_at": "2026-11-19T19:24:20Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
@@ -173,9 +173,10 @@
       4150,
       4154,
       4156,
-      4169
+      4169,
+      4171
     ],
-    "last_seen": "2026-11-18T06:22:29Z"
+    "last_seen": "2026-11-19T18:04:47Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [
@@ -194,8 +195,9 @@
       509,
       511,
       512,
-      513
+      513,
+      515
     ],
-    "last_seen": "2026-11-17T17:40:41Z"
+    "last_seen": "2026-11-19T18:35:41Z"
   }
 }
