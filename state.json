@@ -143,12 +143,13 @@
       1902,
       1905,
       1906,
-      1908
+      1908,
+      1910
     ],
-    "last_seen": "2026-11-19T00:06:58Z"
+    "last_seen": "2026-11-20T19:28:07Z"
   },
   "_meta": {
-    "last_digest_sent_at": "2026-11-19T19:24:20Z"
+    "last_digest_sent_at": "2026-11-20T23:47:45Z"
   },
   "intelowlproject/IntelOwl": {
     "alerted_issue_numbers": [
@@ -175,9 +176,11 @@
       4156,
       4169,
       4171,
-      4040
+      4040,
+      4173,
+      4174
     ],
-    "last_seen": "2026-11-20T17:39:06Z"
+    "last_seen": "2026-11-20T17:54:49Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [
