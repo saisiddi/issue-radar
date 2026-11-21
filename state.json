@@ -147,7 +147,7 @@
       1910,
       1913
     ],
-    "last_seen": "2026-11-21T14:16:45Z"
+    "last_seen": "2026-11-21T17:12:28Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-11-20T23:47:45Z"
@@ -179,9 +179,10 @@
       4171,
       4040,
       4173,
-      4174
+      4174,
+      4177
     ],
-    "last_seen": "2026-11-20T17:54:49Z"
+    "last_seen": "2026-11-21T19:21:16Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [
