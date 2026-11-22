@@ -147,9 +147,10 @@
       1910,
       1913,
       1918,
-      1919
+      1919,
+      1921
     ],
-    "last_seen": "2026-11-22T14:15:51Z"
+    "last_seen": "2026-11-22T20:47:07Z"
   },
   "_meta": {
     "last_digest_sent_at": "2026-11-22T01:02:22Z"
@@ -184,7 +185,7 @@
       4174,
       4177
     ],
-    "last_seen": "2026-11-21T19:21:16Z"
+    "last_seen": "2026-11-22T16:58:21Z"
   },
   "openwisp/netjsonconfig": {
     "alerted_issue_numbers": [
